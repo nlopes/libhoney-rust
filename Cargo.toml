@@ -1,0 +1,12 @@
+[package]
+name = "libhoney-rust"
+version = "0.1.0"
+authors = ["Norberto Lopes <nlopes.ml@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+crossbeam-channel = "0.3"
+futures = "0.1"
+reqwest = "0.9"
+tokio = "0.1"
+tokio-timer = "0.2"
