@@ -53,14 +53,24 @@ pub struct Transmission {
 }
 
 impl Transmission {
-    pub fn new(options: TransmissionOptions) -> Self {
-        let runtime = Builder::new()
+    fn new_runtime(options: Option<TransmissionOptions>) -> Runtime {
+        let mut builder = Builder::new();
+        if let Some(opts) = options {
+            builder
+                .blocking_threads(opts.max_concurrent_batches)
+                .core_threads(opts.max_concurrent_batches);
+        };
+        builder
             .clock(Clock::system())
             .keep_alive(Some(Duration::from_secs(60)))
             .name_prefix("libhoney-rust")
             .stack_size(3 * 1024 * 1024)
             .build()
-            .unwrap();
+            .unwrap()
+    }
+
+    pub fn new(options: TransmissionOptions) -> Self {
+        let runtime = Transmission::new_runtime(None);
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
@@ -104,23 +114,14 @@ impl Transmission {
         options: TransmissionOptions,
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
-        let mut runtime = Builder::new()
-            .blocking_threads(options.max_concurrent_batches)
-            .clock(Clock::system())
-            .core_threads(options.max_concurrent_batches)
-            .keep_alive(Some(Duration::from_secs(60)))
-            .name_prefix(DEFAULT_NAME_PREFIX)
-            .stack_size(3 * 1024 * 1024)
-            .build()
-            .unwrap();
-
+        let mut runtime = Transmission::new_runtime(Some(options));
         let mut batch: Vec<String> = Vec::with_capacity(options.max_batch_size);
 
         loop {
             match work_receiver.recv() {
                 Ok(s) => {
                     if s == "STOP_WORK" {
-                        break
+                        break;
                     }
                     batch.push(s);
                 }
@@ -146,16 +147,8 @@ impl Transmission {
                 }));
                 batch.clear();
             }
-
-            // TODO: we need a oneshot most likely to be able to stop this from the outside
-            // if total >= 5 {
-            //     eprintln!("Hit total");
-            //     break;
-            // }
         }
 
-        // This wait is here in case we're still in the process of sending a batch
-        std::thread::sleep(Duration::from_millis(1000));
         runtime.shutdown_now().wait().unwrap();
         Ok(()).into_future()
     }
@@ -215,7 +208,7 @@ impl Transmission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::{StatusCode};
+    use reqwest::StatusCode;
 
     #[test]
     fn test_batch() {
@@ -235,8 +228,9 @@ mod tests {
             transmission.add(i.to_string());
         }
 
-        std::thread::sleep(Duration::from_millis(3000));
-         let expected = Response {
+        std::thread::sleep(Duration::from_millis(1000));
+
+        let expected = Response {
             status_code: StatusCode::OK,
             body: "finished batch to honeycomb".to_string(),
             duration: Duration::from_millis(0), //We don't care in testing
