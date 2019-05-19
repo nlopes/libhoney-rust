@@ -13,8 +13,9 @@ use crate::ClientOptions;
 #[derive(Debug, Clone)]
 pub struct Event {
     pub(crate) options: ClientOptions,
-    timestamp: DateTime<Utc>,
+    pub(crate) timestamp: DateTime<Utc>,
     pub(crate) fields: HashMap<String, Value>,
+    metadata: Value,
 }
 
 impl FieldHolder for Event {
@@ -30,6 +31,7 @@ impl Event {
             options: options.clone(),
             timestamp: Utc::now(),
             fields: HashMap::new(),
+            metadata: Value::Null,
         }
     }
 
@@ -69,6 +71,7 @@ impl Event {
             options: ClientOptions::default(),
             timestamp: Utc::now(),
             fields: h,
+            metadata: Value::Null,
         }
     }
 }
