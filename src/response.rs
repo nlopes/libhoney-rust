@@ -1,6 +1,6 @@
 use reqwest::StatusCode;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Response {
     pub status_code: StatusCode,
     pub body: String,

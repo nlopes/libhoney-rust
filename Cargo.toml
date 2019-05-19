@@ -3,10 +3,26 @@ name = "libhoney-rust"
 version = "0.1.0"
 authors = ["Norberto Lopes <nlopes.ml@gmail.com>"]
 edition = "2018"
+description = "Rust library for sending data to Honeycomb"
+documentation = "https://docs.rs/libhoney-rust"
+repository = "https://github.com/nlopes/libhoney-rust.git"
+license = "MIT"
+readme = "README.md"
+exclude = [".gitignore", ".travis.yml"]
+
+[badges]
+travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
 
 [dependencies]
+chrono = "0.4"
 crossbeam-channel = "0.3"
 futures = "0.1"
+log = "0.4"
+rand = "0.6"
 reqwest = "0.9"
+serde_json = "1.0"
 tokio = "0.1"
 tokio-timer = "0.2"
+
+[dev-dependencies]
+mockito = "0.17"
