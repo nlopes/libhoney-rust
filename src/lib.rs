@@ -110,6 +110,9 @@ you.
 
 ### Simple: send an event
 ```rust
+# use std::collections::HashMap;
+# use serde_json::{json, Value};
+# use libhoney::{init, Config, ClientOptions};
 # let api_host = &mockito::server_url();
 # let _m = mockito::mock(
 #    "POST",
@@ -121,19 +124,20 @@ you.
 # .create();
 
 # let options = ClientOptions{api_host: api_host.to_string(), ..Default::default()};
+use libhoney::FieldHolder; // Add trait to allow for adding fields
 // Call init to get a client
-let client = init(Config {
+let mut client = init(libhoney::Config {
   options: options,
   transmission_options: Default::default(),
 });
 
 let mut data: HashMap<String, Value> = HashMap::new();
-data.insert("duration_ms", Value::Number(153.12));
-data.insert("method", Value::String("get".to_string()));
-data.insert("hostname", Value::String("appserver15".to_string()));
-data.insert("payload_length", Value::Number(27));
+data.insert("duration_ms".to_string(), json!(153.12));
+data.insert("method".to_string(), Value::String("get".to_string()));
+data.insert("hostname".to_string(), Value::String("appserver15".to_string()));
+data.insert("payload_length".to_string(), json!(27));
 
-ev := client.new_event()
+let mut ev = client.new_event();
 ev.add(data);
 ev.send(&mut client);
 ```
@@ -154,6 +158,7 @@ mod transmission;
 pub use builder::{Builder, DynamicFieldFunc};
 pub use client::{Client, ClientOptions};
 pub use event::Event;
+pub use fields::FieldHolder;
 use transmission::Transmission;
 pub use transmission::TransmissionOptions;
 
