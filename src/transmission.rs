@@ -62,7 +62,7 @@ impl Default for TransmissionOptions {
     }
 }
 
-/// Transmission handles colleting and sending individual events to Honeycomb
+/// Transmission handles collecting and sending individual events to Honeycomb
 #[derive(Debug)]
 pub struct Transmission {
     pub(crate) options: TransmissionOptions,

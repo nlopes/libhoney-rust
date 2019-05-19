@@ -1,5 +1,24 @@
 /*! Rust library for sending data to Honeycomb.
 
+# **IMPORTANT NOTE**: please do **NOT** use this in **production** (yet).
+
+But I'd be forever greatful if you can try it out and provide feedback. There are a few
+reasons why I think this is not yet for prime time (aka: production):
+
+- I'm not happy with the interfaces for the library - althought they are closer to idiomatic rust than the instructions (Honeycomb SDK spec) I don't think they're quite there yet. That means I'll probably make breaking changes to this, which will cause you pain if you use it straight away.
+
+- I'm not convinced of the threading code, and how I return responses. Although "it works" it probably isn't what you'd want from a mature library.
+
+- I have mostly copied the docs from Honeycomb, so there will be a few places where they don't quite match the content, which also means that you'll have a hard time following the docs (sorry!).
+
+- I tried to get to a workable state quickly and so I (ab)used .unwrap() a lot - that's bad in a library as it will panic your client.
+
+For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
+[semantic versioning][semantic versioning]). Having said that, if you still want to use
+this, thank you for being brave, and make sure to open bugs against it!
+
+# libhoney
+
 Rust library for sending events to Honeycomb, a service for debugging your software in
 production.
 
@@ -30,10 +49,97 @@ client.close();
 
 Further configuration options can be found in the [API reference][API reference].
 
-##
+## Building and Sending Events
 
-# References
-[APpI reference]: https://docs.rs/libhoney-rust
+Once initialized, the libhoney client is ready to send events. Events go through three
+phases:
+
+- Creation `event := builder.new_event()`
+- Adding fields `event.add_field("key", Value::String("val".to_string()))`, `event.add(data)`
+- Transmission `event.send(&mut client)`
+
+Upon calling .send(), the event is dispatched to be sent to Honeycomb. All libraries set
+defaults that will allow your application to function as smoothly as possible during error
+conditions.
+
+In its simplest form, you can add a single attribute to an event with the .add_field(k, v)
+method. If you add the same key multiple times, only the last value added will be kept.
+
+More complex structures (maps and structs—things that can be serialized into a JSON
+object) can be added to an event with the .add(data) method.
+
+Events can have metadata associated with them that is not sent to Honeycomb. This metadata
+is used to identify the event when processing the response. More detail about metadata is
+below in the Response section.
+
+## Handling responses
+
+Sending an event is an asynchronous action and will avoid blocking by default. .send()
+will enqueue the event to be sent as soon as possible (thus, the return value doesn’t
+indicate that the event was successfully sent). Use the Vec returned by .responses() to
+check whether events were successfully received by Honeycomb’s servers.
+
+TODO(nlopes): Add support for metadata - currently this does not exist in libhoney-rust.
+
+Before sending an event, you have the option to attach metadata to that event. This
+metadata is not sent to Honeycomb; instead, it’s used to help you match up individual
+responses with sent events. When sending an event, libhoney will take the metadata from
+the event and attach it to the response object for you to consume. Add metadata by
+populating the .metadata attribute directly on an event.
+
+Responses have a number of fields describing the result of an attempted event send:
+
+- TODO(nlopes): metadata: the metadata you attached to the event to which this response corresponds
+
+- status_code: the HTTP status code returned by Honeycomb when trying to send the event. 2xx indicates success.
+
+- duration: the time.Duration it took to send the event.
+
+- body: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
+
+- TODO(nlopes): Err: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
+
+You don’t have to process responses if you’re not interested in them—simply ignoring them
+is perfectly safe. Unread responses will be dropped.
+
+## Examples
+
+Honeycomb can calculate all sorts of statistics, so send the data you care about and let
+us crunch the averages, percentiles, lower/upper bounds, cardinality—whatever you want—for
+you.
+
+### Simple: send an event
+```rust
+# let api_host = &mockito::server_url();
+# let _m = mockito::mock(
+#    "POST",
+#     mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+# )
+# .with_status(200)
+# .with_header("content-type", "application/json")
+# .with_body("finished batch to honeycomb")
+# .create();
+
+# let options = ClientOptions{api_host: api_host.to_string(), ..Default::default()};
+// Call init to get a client
+let client = init(Config {
+  options: options,
+  transmission_options: Default::default(),
+});
+
+let mut data: HashMap<String, Value> = HashMap::new();
+data.insert("duration_ms", Value::Number(153.12));
+data.insert("method", Value::String("get".to_string()));
+data.insert("hostname", Value::String("appserver15".to_string()));
+data.insert("payload_length", Value::Number(27));
+
+ev := client.new_event()
+ev.add(data);
+ev.send(&mut client);
+```
+
+[API reference]: https://docs.rs/libhoney-rust
+[semantic versioning]: https://semver.org
 
  */
 #![deny(missing_docs)]
@@ -48,7 +154,8 @@ mod transmission;
 pub use builder::{Builder, DynamicFieldFunc};
 pub use client::{Client, ClientOptions};
 pub use event::Event;
-pub use transmission::{Transmission, TransmissionOptions};
+use transmission::Transmission;
+pub use transmission::TransmissionOptions;
 
 /// Config allows the user to customise the initialisation of the library (effectively the
 /// Client)
@@ -68,7 +175,7 @@ pub struct Config {
 }
 
 /// init is called on app initialisation and passed a Config. A Config has two sets of
-/// options (ClientOptions and TrasnmissionOptions).
+/// options (ClientOptions and TransmissionOptions).
 pub fn init(config: Config) -> Client {
     let transmission = Transmission::new(config.transmission_options);
     Client::new(config.options, transmission)
