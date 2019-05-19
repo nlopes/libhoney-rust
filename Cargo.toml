@@ -1,10 +1,10 @@
 [package]
-name = "libhoney-rust"
+name = "libhoney"
 version = "0.1.0"
 authors = ["Norberto Lopes <nlopes.ml@gmail.com>"]
 edition = "2018"
 description = "Rust library for sending data to Honeycomb"
-documentation = "https://docs.rs/libhoney-rust"
+documentation = "https://docs.rs/libhoney"
 repository = "https://github.com/nlopes/libhoney-rust.git"
 license = "MIT"
 readme = "README.md"

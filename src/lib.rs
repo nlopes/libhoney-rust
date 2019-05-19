@@ -12,14 +12,20 @@ production.
 
 Initialize the library by passing in your Team API key and the default dataset name to
 which it should send events. When you call the library’s initialization routine, it spins
-up background threads to handle sending all the events. Once the client goes out of scope,
-all background threads will be terminated.
+up background threads to handle sending all the events. Calling .close() on the client
+will terminate all background threads.
 
 ```rust
 let client = libhoney::init(libhoney::Config{
-  api_key: "YOUR_API_KEY",
-  dataset: "honeycomb-rust-example",
+  options: libhoney::ClientOptions {
+    api_key: "YOUR_API_KEY".to_string(),
+    dataset: "honeycomb-rust-example".to_string(),
+    ..Default::default()
+  },
+  transmission_options: Default::default(),
 });
+
+client.close();
 ```
 
 Further configuration options can be found in the [API reference][API reference].
@@ -27,7 +33,7 @@ Further configuration options can be found in the [API reference][API reference]
 ##
 
 # References
-[API reference]: https://docs.rs/libhoney-rust
+[APpI reference]: https://docs.rs/libhoney-rust
 
  */
 #![deny(missing_docs)]
@@ -39,10 +45,10 @@ mod fields;
 mod response;
 mod transmission;
 
-use builder::{Builder, DynamicFieldFunc};
-use client::{Client, ClientOptions};
-use event::Event;
-use transmission::{Transmission, TransmissionOptions};
+pub use builder::{Builder, DynamicFieldFunc};
+pub use client::{Client, ClientOptions};
+pub use event::Event;
+pub use transmission::{Transmission, TransmissionOptions};
 
 /// Config allows the user to customise the initialisation of the library (effectively the
 /// Client)
@@ -56,8 +62,8 @@ pub struct Config {
     pub options: ClientOptions,
 
     /// Configuration for the underlying sender. It is safe (and recommended) to leave
-	/// these values at their defaults. You cannot change these values after calling
-	/// init()
+    /// these values at their defaults. You cannot change these values after calling
+    /// init()
     pub transmission_options: TransmissionOptions,
 }
 
@@ -65,8 +71,7 @@ pub struct Config {
 /// options (ClientOptions and TrasnmissionOptions).
 pub fn init(config: Config) -> Client {
     let transmission = Transmission::new(config.transmission_options);
-    let client = Client::new(config.options, transmission);
-    client
+    Client::new(config.options, transmission)
 }
 
 #[cfg(test)]
@@ -75,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_init() {
-        let client = init(Config{
+        let client = init(Config {
             options: Default::default(),
             transmission_options: Default::default(),
         });

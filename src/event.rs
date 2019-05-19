@@ -8,11 +8,13 @@ use crate::client::Client;
 use crate::fields::FieldHolder;
 use crate::ClientOptions;
 
+/// Event is used to hold data that can be sent to Honeycomb. It can also specify
+/// overrides of the config settings (ClientOptions).
 #[derive(Debug, Clone)]
 pub struct Event {
     pub(crate) options: ClientOptions,
     timestamp: DateTime<Utc>,
-    pub fields: HashMap<String, Value>,
+    pub(crate) fields: HashMap<String, Value>,
 }
 
 impl FieldHolder for Event {
@@ -22,6 +24,7 @@ impl FieldHolder for Event {
 }
 
 impl Event {
+    /// new creates a new event with the passed ClientOptions
     pub fn new(options: &ClientOptions) -> Self {
         Event {
             options: options.clone(),
@@ -30,6 +33,20 @@ impl Event {
         }
     }
 
+    /// send dispatches the event to be sent to Honeycomb, sampling if necessary.
+    ///
+    /// If you have sampling enabled (i.e. sample_rate >1), send will only actually
+    /// transmit data with a probability of 1/sample_rate. No error is returned whether or
+    /// not traffic is sampled, however, the Response sent down the response channel will
+    /// indicate the event was sampled in the errors Err field.
+    ///
+    /// Send inherits the values of required fields from ClientOptions. If any required
+    /// fields are specified in neither ClientOptions nor the Event, send will return an
+    /// error. Required fields are api_host, api_key, and dataset. Values specified in an
+    /// Event override ClientOptions.
+    ///
+    /// Once you send an event, any addition calls to add data to that event will return
+    /// without doing anything. Once the event is sent, it becomes immutable.
     pub fn send(&self, client: &mut Client) {
         if self.should_drop() {
             return;
@@ -41,7 +58,7 @@ impl Event {
         if self.options.sample_rate <= 1 {
             return false;
         }
-        return rand::thread_rng().gen_range(0, self.options.sample_rate) != 0;
+        rand::thread_rng().gen_range(0, self.options.sample_rate) != 0
     }
 
     pub(crate) fn stop_event() -> Self {

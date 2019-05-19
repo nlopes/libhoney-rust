@@ -15,13 +15,11 @@ pub trait FieldHolder {
 
     fn add_func<F>(&mut self, func: F)
     where
+        // TODO(nlopes): this shouldn't be std::io::Error
         F: Fn() -> Result<(String, Value), std::io::Error>,
     {
-        loop {
-            match func() {
-                Ok((name, value)) => self.add_field(&name, value),
-                Err(_) => break,
-            }
+        while let Ok((name, value)) = func() {
+            self.add_field(&name, value);
         }
     }
 

@@ -6,6 +6,7 @@ use crate::event::Event;
 use crate::fields::FieldHolder;
 use crate::ClientOptions;
 
+/// Shorthand type for the function to be passed to the add_dynamic_field calls
 pub type DynamicFieldFunc = fn() -> Value;
 
 impl FieldHolder for Builder {
@@ -14,14 +15,17 @@ impl FieldHolder for Builder {
     }
 }
 
+/// Builder is used to create templates for new events, specifying default fields and
+/// override settings.
 #[derive(Debug, Clone)]
 pub struct Builder {
     options: ClientOptions,
-    pub fields: HashMap<String, Value>,
+    pub(crate) fields: HashMap<String, Value>,
     dynamic_fields: Vec<(String, DynamicFieldFunc)>,
 }
 
 impl Builder {
+    /// Creates a new event Builder with emtpy Static or Dynamic fields.
     pub fn new(options: ClientOptions) -> Self {
         Builder {
             options,
@@ -30,10 +34,14 @@ impl Builder {
         }
     }
 
+    /// add_dynamic_field adds a dynamic field to the builder. Any events created from
+    /// this builder will get this metric added.
     pub fn add_dynamic_field(&mut self, name: &str, func: DynamicFieldFunc) {
         self.dynamic_fields.push((name.to_string(), func));
     }
 
+    /// new_event creates a new Event prepopulated with fields, dynamic field values, and
+    /// configuration inherited from the builder.
     pub fn new_event(&self) -> Event {
         let mut e = Event::new(&self.options);
         e.fields = self.fields.clone();

@@ -19,33 +19,34 @@ const DEFAULT_NAME_PREFIX: &str = "libhoney-rust";
 const DEFAULT_MAX_BATCH_SIZE: usize = 50;
 // DEFAULT_MAX_CONCURRENT_BATCHES how many batches to maintain in parallel
 const DEFAULT_MAX_CONCURRENT_BATCHES: usize = 80;
-// DEFAULT_MAX_BATCH_TIMEOUT how frequently to send unfilled batches
-const DEFAULT_MAX_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
+// DEFAULT_BATCH_TIMEOUT how frequently to send unfilled batches
+const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 // DEFAULT_PENDING_WORK_CAPACITY how many events to queue up for busy batches
 const DEFAULT_PENDING_WORK_CAPACITY: usize = 10_000;
 
 /// TransmissionOptions includes various options to tweak the behavious of the sender.
 #[derive(Debug, Clone)]
 pub struct TransmissionOptions {
-    // how many events to collect into a batch before sending. Overrides
-    // DEFAULT_MAX_BATCH_SIZE.
+    /// how many events to collect into a batch before sending. Overrides
+    /// DEFAULT_MAX_BATCH_SIZE.
     pub max_batch_size: usize,
 
-    // how many batches can be inflight simultaneously. Overrides
-    // DEFAULT_MAX_CONCURRENT_BATCHES.
+    /// how many batches can be inflight simultaneously. Overrides
+    /// DEFAULT_MAX_CONCURRENT_BATCHES.
     pub max_concurrent_batches: usize,
 
+    /// how often to send off batches. Overrides DEFAULT_BATCH_TIMEOUT. (TODO(nlopes):
+    /// Currently unused)
+    pub batch_timeout: Duration,
 
-    pub max_batch_timeout: Duration,
-
-    // how many events to allow to pile up. Overrides DEFAULT_PENDING_WORK_CAPACITY
+    /// how many events to allow to pile up. Overrides DEFAULT_PENDING_WORK_CAPACITY
     pub pending_work_capacity: usize,
 
-    // user_agent_addition is a variable set at compile time via -ldflags to allow you to
-    // augment the "User-Agent" header that libhoney sends along with each event.  The
-    // default User-Agent is "libhoney-go/<version>". If you set this variable, its
-    // contents will be appended to the User-Agent string, separated by a space. The
-    // expected format is product-name/version, eg "myapp/1.0"
+    /// user_agent_addition is an option that allows you to augment the "User-Agent"
+    /// header that libhoney sends along with each event.  The default User-Agent is
+    /// "libhoney-go/<version>". If you set this variable, its contents will be appended
+    /// to the User-Agent string, separated by a space. The expected format is
+    /// product-name/version, eg "myapp/1.0"
     pub user_agent_addition: Option<String>,
 }
 
@@ -54,13 +55,14 @@ impl Default for TransmissionOptions {
         TransmissionOptions {
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
             max_concurrent_batches: DEFAULT_MAX_CONCURRENT_BATCHES,
-            max_batch_timeout: DEFAULT_MAX_BATCH_TIMEOUT,
+            batch_timeout: DEFAULT_BATCH_TIMEOUT,
             pending_work_capacity: DEFAULT_PENDING_WORK_CAPACITY,
             user_agent_addition: None,
         }
     }
 }
 
+/// Transmission handles colleting and sending individual events to Honeycomb
 #[derive(Debug)]
 pub struct Transmission {
     pub(crate) options: TransmissionOptions,
@@ -99,7 +101,7 @@ impl Transmission {
             .unwrap()
     }
 
-    pub fn new(options: TransmissionOptions) -> Self {
+    pub(crate) fn new(options: TransmissionOptions) -> Self {
         let runtime = Transmission::new_runtime(None);
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
@@ -118,7 +120,7 @@ impl Transmission {
     }
 
     // TODO: return Result
-    pub fn start(&mut self) {
+    pub(crate) fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
         let response_receiver = self.response_receiver.clone();
@@ -225,23 +227,20 @@ impl Transmission {
             .header("X-Honeycomb-Team", opts.api_key)
             .send()
         {
-            Ok(mut res) => {
-                return Response {
-                    status_code: res.status(),
-                    body: res.text().unwrap(),
-                    duration: clock.elapsed().unwrap(),
-                };
-            }
+            Ok(mut res) => Response {
+                status_code: res.status(),
+                body: res.text().unwrap(),
+                duration: clock.elapsed().unwrap(),
+            },
             Err(e) => panic!("What should we do? Error: {}", e),
         }
     }
 
-    pub fn stop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         self.work_sender.send(Event::stop_event()).unwrap();
-        drop(&mut self.runtime);
     }
 
-    pub fn send(&mut self, event: Event) {
+    pub(crate) fn send(&mut self, event: Event) {
         if !self.work_sender.is_full() {
             self.runtime.spawn(
                 self.work_sender
@@ -255,6 +254,9 @@ impl Transmission {
         }
     }
 
+    /// responses returns a vec  from which the caller can read the responses to sent
+    /// events.
+    /// TODO(nlopes): yucki, be better than this
     pub fn responses(&self) -> Vec<Response> {
         self.responses.lock().unwrap().to_vec()
     }
@@ -277,10 +279,7 @@ mod tests {
         );
 
         assert_eq!(transmission.options.max_batch_size, DEFAULT_MAX_BATCH_SIZE);
-        assert_eq!(
-            transmission.options.max_batch_timeout,
-            DEFAULT_MAX_BATCH_TIMEOUT
-        );
+        assert_eq!(transmission.options.batch_timeout, DEFAULT_BATCH_TIMEOUT);
         assert_eq!(
             transmission.options.max_concurrent_batches,
             DEFAULT_MAX_CONCURRENT_BATCHES
