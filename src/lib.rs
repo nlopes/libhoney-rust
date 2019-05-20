@@ -151,6 +151,7 @@ ev.send(&mut client);
 mod builder;
 mod client;
 mod event;
+mod eventdata;
 mod fields;
 mod response;
 mod transmission;

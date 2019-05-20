@@ -14,12 +14,13 @@ exclude = [".gitignore", ".travis.yml"]
 travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
 
 [dependencies]
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 crossbeam-channel = "0.3"
 futures = "0.1"
 log = "0.4"
 rand = "0.6"
 reqwest = "0.9"
+serde = "1.0"
 serde_json = "1.0"
 tokio = "0.1"
 tokio-timer = "0.2"

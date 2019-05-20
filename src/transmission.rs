@@ -7,6 +7,7 @@ use reqwest::header;
 use tokio::runtime::{Builder, Runtime};
 use tokio_timer::clock::Clock;
 
+use crate::eventdata::EventData;
 use crate::event::Event;
 use crate::response::Response;
 
@@ -207,8 +208,15 @@ impl Transmission {
     ) -> Response {
         let mut opts: crate::ClientOptions = Default::default();
         // TODO(nlopes): send batch to honeycomb here
+        let mut payload: Vec<EventData> = Vec::new();
+
         for event in &events {
             opts = event.options.clone();
+            payload.push(EventData {
+                data: event.fields.clone(),
+                time: event.timestamp,
+                samplerate: event.options.sample_rate,
+            })
         }
 
         let endpoint = format!("{}{}{}", opts.api_host, BATCH_ENDPOINT, &opts.dataset);
@@ -225,6 +233,7 @@ impl Transmission {
             .header(header::USER_AGENT, user_agent)
             .header(header::CONTENT_TYPE, "application/json")
             .header("X-Honeycomb-Team", opts.api_key)
+            .json(&payload)
             .send()
         {
             Ok(mut res) => Response {
@@ -339,4 +348,5 @@ mod tests {
         assert_eq!(only.body, "finished batch to honeycomb".to_string());
         transmission.stop();
     }
+
 }
