@@ -5,13 +5,15 @@
 But I'd be forever greatful if you can try it out and provide feedback. There are a few
 reasons why I think this is not yet for prime time (aka: production):
 
-- I'm not happy with the interfaces for the library - althought they are closer to idiomatic rust than the instructions (Honeycomb SDK spec) I don't think they're quite there yet. That means I'll probably make breaking changes to this, which will cause you pain if you use it straight away.
+- I'm not happy with the interfaces for the library - althought they are closer to idiomatic rust than the instructions (Honeycomb SDK spec - singleton pattern) I don't think they're quite there yet. That means I'll probably make breaking changes to this, which will cause you pain if you use it straight away. I didn't use the singleton pattern, meaning you have to init and then use the client for the operations (you control the client, not the library).
 
 - I'm not convinced of the threading code, and how I return responses. Although "it works" it probably isn't what you'd want from a mature library.
 
 - I have mostly copied the docs from Honeycomb, so there will be a few places where they don't quite match the content, which also means that you'll have a hard time following the docs (sorry!).
 
 - I tried to get to a workable state quickly and so I (ab)used .unwrap() a lot - that's bad in a library as it will panic your client.
+
+- I've set Metadata as a "serialisable json value" (serde_json::Value) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
 
 For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
 [semantic versioning][semantic versioning]). Having said that, if you still want to use
@@ -79,8 +81,6 @@ will enqueue the event to be sent as soon as possible (thus, the return value do
 indicate that the event was successfully sent). Use the Vec returned by .responses() to
 check whether events were successfully received by Honeycomb’s servers.
 
-TODO(nlopes): Add support for metadata - currently this does not exist in libhoney-rust.
-
 Before sending an event, you have the option to attach metadata to that event. This
 metadata is not sent to Honeycomb; instead, it’s used to help you match up individual
 responses with sent events. When sending an event, libhoney will take the metadata from
@@ -89,7 +89,7 @@ populating the .metadata attribute directly on an event.
 
 Responses have a number of fields describing the result of an attempted event send:
 
-- TODO(nlopes): metadata: the metadata you attached to the event to which this response corresponds
+- metadata: the metadata you attached to the event to which this response corresponds
 
 - status_code: the HTTP status code returned by Honeycomb when trying to send the event. 2xx indicates success.
 
