@@ -1,13 +1,12 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
-use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Response {
+pub struct Response<T> {
     pub status_code: StatusCode,
     pub body: String,
     pub duration: std::time::Duration,
-    pub metadata: Option<Value>,
+    pub metadata: Option<T>,
     pub error: Option<String>,
 }
 

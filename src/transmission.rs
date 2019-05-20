@@ -11,7 +11,7 @@ use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::response::{HoneyResponse, Response};
 
-type Events = Vec<Event>;
+type Events<T> = Vec<Event<T>>;
 
 const BATCH_ENDPOINT: &str = "/1/batch/";
 
@@ -67,27 +67,36 @@ impl Default for TransmissionOptions {
 
 /// Transmission handles collecting and sending individual events to Honeycomb
 #[derive(Debug)]
-pub struct Transmission {
+pub struct Transmission<T>
+where
+    T: Clone + Send + 'static,
+{
     pub(crate) options: TransmissionOptions,
     user_agent: String,
 
     runtime: Runtime,
 
-    work_sender: Sender<Event>,
-    work_receiver: Receiver<Event>,
-    response_sender: Sender<Response>,
-    response_receiver: Receiver<Response>,
+    work_sender: Sender<Event<T>>,
+    work_receiver: Receiver<Event<T>>,
+    response_sender: Sender<Response<T>>,
+    response_receiver: Receiver<Response<T>>,
 
-    responses: Arc<Mutex<Vec<Response>>>,
+    responses: Arc<Mutex<Vec<Response<T>>>>,
 }
 
-impl Drop for Transmission {
+impl<T> Drop for Transmission<T>
+where
+    T: Clone + Send + 'static,
+{
     fn drop(&mut self) {
         self.stop()
     }
 }
 
-impl Transmission {
+impl<T> Transmission<T>
+where
+    T: Clone + Send + 'static,
+{
     fn new_runtime(options: Option<&TransmissionOptions>) -> Runtime {
         let mut builder = Builder::new();
         if let Some(opts) = options {
@@ -105,7 +114,7 @@ impl Transmission {
     }
 
     pub(crate) fn new(options: TransmissionOptions) -> Self {
-        let runtime = Transmission::new_runtime(None);
+        let runtime = Transmission::<T>::new_runtime(None);
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
@@ -135,13 +144,13 @@ impl Transmission {
     }
 
     fn sender(
-        work_receiver: Receiver<Event>,
-        response_sender: Sender<Response>,
+        work_receiver: Receiver<Event<T>>,
+        response_sender: Sender<Response<T>>,
         options: TransmissionOptions,
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
-        let mut runtime = Transmission::new_runtime(Some(&options));
-        let mut batch: Events = Vec::with_capacity(options.max_batch_size);
+        let mut runtime = Transmission::<T>::new_runtime(Some(&options));
+        let mut batch: Events<T> = Vec::with_capacity(options.max_batch_size);
         let mut expired = false;
 
         loop {
@@ -191,11 +200,11 @@ impl Transmission {
     // TODO(nlopes): check timestamps (both setting up and updating them). Also make sure
     // we're measuring both queue times and total times
     fn send_batch(
-        events: Events,
+        events: Events<T>,
         options: TransmissionOptions,
         user_agent: String,
         clock: SystemTime,
-    ) -> Vec<Response> {
+    ) -> Vec<Response<T>> {
         let mut opts: crate::ClientOptions = Default::default();
         let mut payload: Vec<EventData> = Vec::new();
 
@@ -260,7 +269,7 @@ impl Transmission {
         self.work_sender.send(Event::stop_event()).unwrap();
     }
 
-    pub(crate) fn send(&mut self, event: Event) {
+    pub(crate) fn send(&mut self, event: Event<T>) {
         if !self.work_sender.is_full() {
             self.runtime.spawn(
                 self.work_sender
@@ -279,7 +288,7 @@ impl Transmission {
     }
 
     /// responses provides access to the receiver
-    pub fn responses(&self) -> Receiver<Response> {
+    pub fn responses(&self) -> Receiver<Response<T>> {
         self.response_receiver.clone()
     }
 }
@@ -294,7 +303,10 @@ mod tests {
 
     #[test]
     fn test_defaults() {
-        let transmission = Transmission::new(Default::default());
+        #[derive(Debug, Clone)]
+        struct Metadata {}
+
+        let transmission = Transmission::<Metadata>::new(Default::default());
         assert_eq!(
             transmission.user_agent,
             format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION"))
@@ -314,7 +326,10 @@ mod tests {
 
     #[test]
     fn test_modifiable_defaults() {
-        let transmission = Transmission::new(TransmissionOptions {
+        #[derive(Debug, Clone)]
+        struct Metadata {}
+
+        let transmission = Transmission::<Metadata>::new(TransmissionOptions {
             user_agent_addition: Some(" something/0.3".to_string()),
             ..Default::default()
         });
@@ -328,7 +343,10 @@ mod tests {
     fn test_responses() {
         use crate::fields::FieldHolder;
 
-        let mut transmission = Transmission::new(TransmissionOptions {
+        #[derive(Debug, Clone)]
+        struct Metadata {}
+
+        let mut transmission = Transmission::<Metadata>::new(TransmissionOptions {
             max_batch_size: 5,
             ..Default::default()
         });

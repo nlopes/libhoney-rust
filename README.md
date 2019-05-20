@@ -47,7 +47,11 @@ up background threads to handle sending all the events. Calling .close() on the 
 will terminate all background threads.
 
 ```rust
-let client = libhoney::init(libhoney::Config{
+#[derive(Clone)]
+// Define your own event metadata struct, as long as it is follows Clone + Send
+struct Metadata{}
+
+let client = libhoney::init::<Metadata>(libhoney::Config{
   options: libhoney::ClientOptions {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
@@ -122,8 +126,12 @@ you.
 ```rust
 
 use libhoney::FieldHolder; // Add trait to allow for adding fields
+
+#[derive(Clone)]
+struct Metadata{}
+
 // Call init to get a client
-let mut client = init(libhoney::Config {
+let mut client = init::<Metadata>(libhoney::Config {
   options: options,
   transmission_options: Default::default(),
 });
@@ -141,4 +149,3 @@ ev.send(&mut client);
 
 [API reference]: https://docs.rs/libhoney-rust
 [semantic versioning]: https://semver.org
-

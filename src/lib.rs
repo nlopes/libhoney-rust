@@ -39,7 +39,11 @@ up background threads to handle sending all the events. Calling .close() on the 
 will terminate all background threads.
 
 ```rust
-let client = libhoney::init(libhoney::Config{
+#[derive(Clone)]
+// Define your own event metadata struct, as long as it follows Clone + Send
+struct Metadata{}
+
+let client = libhoney::init::<Metadata>(libhoney::Config{
   options: libhoney::ClientOptions {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
@@ -127,8 +131,12 @@ you.
 
 # let options = ClientOptions{api_host: api_host.to_string(), ..Default::default()};
 use libhoney::FieldHolder; // Add trait to allow for adding fields
+
+#[derive(Clone)]
+struct Metadata{}
+
 // Call init to get a client
-let mut client = init(libhoney::Config {
+let mut client = init::<Metadata>(libhoney::Config {
   options: options,
   transmission_options: Default::default(),
 });
@@ -185,7 +193,9 @@ pub struct Config {
 
 /// init is called on app initialisation and passed a Config. A Config has two sets of
 /// options (ClientOptions and TransmissionOptions).
-pub fn init(config: Config) -> Client {
+pub fn init<T>(config: Config) -> Client<T>
+where T: Clone + Send + 'static
+{
     let transmission = Transmission::new(config.transmission_options);
     Client::new(config.options, transmission)
 }
@@ -196,7 +206,10 @@ mod tests {
 
     #[test]
     fn test_init() {
-        let client = init(Config {
+
+        #[derive(Debug, Clone)]
+        struct Metadata {}
+        let client = init::<Metadata>(Config {
             options: Default::default(),
             transmission_options: Default::default(),
         });

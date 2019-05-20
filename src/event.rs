@@ -11,20 +11,29 @@ use crate::ClientOptions;
 /// Event is used to hold data that can be sent to Honeycomb. It can also specify
 /// overrides of the config settings (ClientOptions).
 #[derive(Debug, Clone)]
-pub struct Event {
+pub struct Event<T>
+where
+    T: Clone + Send,
+{
     pub(crate) options: ClientOptions,
     pub(crate) timestamp: DateTime<Utc>,
     pub(crate) fields: HashMap<String, Value>,
-    pub(crate) metadata: Option<Value>,
+    pub(crate) metadata: Option<T>,
 }
 
-impl FieldHolder for Event {
+impl<T> FieldHolder for Event<T>
+where
+    T: Clone + Send,
+{
     fn get_fields(&mut self) -> &mut HashMap<String, Value> {
         &mut self.fields
     }
 }
 
-impl Event {
+impl<T> Event<T>
+where
+    T: Clone + Send,
+{
     /// new creates a new event with the passed ClientOptions
     pub fn new(options: &ClientOptions) -> Self {
         Event {
@@ -49,7 +58,7 @@ impl Event {
     ///
     /// Once you send an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send(&self, client: &mut Client) {
+    pub fn send(&self, client: &mut Client<T>) {
         if self.should_drop() {
             return;
         }
@@ -61,6 +70,11 @@ impl Event {
             return false;
         }
         rand::thread_rng().gen_range(0, self.options.sample_rate) != 0
+    }
+
+    /// Set metadata
+    pub fn set_metadata(&mut self, metadata: T) {
+        self.metadata = Some(metadata);
     }
 
     pub(crate) fn stop_event() -> Self {
@@ -86,7 +100,10 @@ mod tests {
 
     #[test]
     fn test_add() {
-        let mut e = Event::new(&ClientOptions {
+        #[derive(Debug, Clone)]
+        struct Metadata{}
+
+        let mut e = Event::<Metadata>::new(&ClientOptions {
             api_key: "some_api_key".to_string(),
             ..Default::default()
         });
@@ -100,6 +117,9 @@ mod tests {
     #[test]
     fn test_send() {
         use crate::{Transmission, TransmissionOptions};
+
+        #[derive(Debug, Clone)]
+        struct Metadata{}
 
         let api_host = &mockito::server_url();
         let _m = mockito::mock(
@@ -116,7 +136,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut client = Client::new(
+        let mut client = Client::<Metadata>::new(
             options.clone(),
             Transmission::new(TransmissionOptions {
                 max_batch_size: 1,

@@ -42,7 +42,7 @@ impl Builder {
 
     /// new_event creates a new Event prepopulated with fields, dynamic field values, and
     /// configuration inherited from the builder.
-    pub fn new_event(&self) -> Event {
+    pub fn new_event<T: Clone + Send>(&self) -> Event<T> {
         let mut e = Event::new(&self.options);
         e.fields = self.fields.clone();
         for (name, func) in &self.dynamic_fields {

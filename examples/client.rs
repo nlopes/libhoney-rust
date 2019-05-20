@@ -1,8 +1,11 @@
 use libhoney;
 use libhoney::FieldHolder;
 
+#[derive(Debug, Clone)]
+struct Metadata {}
+
 fn main() {
-    let mut client = libhoney::init(libhoney::Config {
+    let mut client = libhoney::init::<Metadata>(libhoney::Config {
         options: libhoney::ClientOptions {
             api_key: std::env::var("HONEYCOMB_API_KEY").unwrap(),
             dataset: std::env::var("HONEYCOMB_DATASET").unwrap(),

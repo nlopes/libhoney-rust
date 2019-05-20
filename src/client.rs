@@ -55,20 +55,26 @@ impl Default for ClientOptions {
 /// Client represents an object that can create new builders and events and send them
 /// somewhere.
 #[derive(Debug)]
-pub struct Client {
+pub struct Client<T>
+where
+    T: Clone + Send + 'static,
+{
     pub(crate) options: ClientOptions,
-    pub(crate) transmission: Transmission,
+    pub(crate) transmission: Transmission<T>,
 
     builder: Builder,
 }
 
-impl Client {
+impl<T> Client<T>
+where
+    T: Clone + Send + 'static,
+{
     /// new creates a new Client with the provided ClientOptions and initialised
     /// Transmission.
     ///
     /// Once populated, it auto starts the transmission background threads and is ready to
     /// send events.
-    pub fn new(options: ClientOptions, transmission: Transmission) -> Self {
+    pub fn new(options: ClientOptions, transmission: Transmission<T>) -> Self {
         info!("Creating honey client");
 
         let mut c = Client {
@@ -128,12 +134,12 @@ impl Client {
 
     /// new_event creates a new event prepopulated with any Fields present in the Client's
     /// scope.
-    pub fn new_event(&self) -> Event {
+    pub fn new_event(&self) -> Event<T> {
         self.builder.new_event()
     }
 
     /// responses returns a receiver channel with responses
-    pub fn responses(&self) -> Receiver<Response> {
+    pub fn responses(&self) -> Receiver<Response<T>> {
         self.transmission.responses()
     }
 }
@@ -144,7 +150,9 @@ mod tests {
 
     #[test]
     fn test_client() {
-        let client = Client::new(Default::default(), Transmission::new(Default::default()));
+        #[derive(Debug, Clone)]
+        struct Metadata{}
+        let client = Client::<Metadata>::new(Default::default(), Transmission::new(Default::default()));
         client.close();
     }
 }
