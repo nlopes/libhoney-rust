@@ -159,7 +159,7 @@ impl Transmission {
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     // TODO(nlopes): is this the right behaviour?
-                    break
+                    break;
                 }
             };
 
