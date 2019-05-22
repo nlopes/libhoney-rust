@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use futures::future::{lazy, Future, IntoFuture};
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
@@ -24,6 +24,8 @@ const DEFAULT_MAX_CONCURRENT_BATCHES: usize = 80;
 const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 // DEFAULT_PENDING_WORK_CAPACITY how many events to queue up for busy batches
 const DEFAULT_PENDING_WORK_CAPACITY: usize = 10_000;
+// DEFAULT_SEND_TIMEOUT how much to wait to send an event
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// TransmissionOptions includes various options to tweak the behavious of the sender.
 #[derive(Debug, Clone)]
@@ -120,7 +122,6 @@ impl Transmission {
         }
     }
 
-    // TODO: return Result
     pub(crate) fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
@@ -141,23 +142,28 @@ impl Transmission {
     ) -> impl Future<Item = (), Error = ()> {
         let mut runtime = Transmission::new_runtime(Some(&options));
         let mut batch: Events = Vec::with_capacity(options.max_batch_size);
+        let mut expired = false;
 
         loop {
             let options = options.clone();
-            match work_receiver.recv() {
+
+            match work_receiver.recv_timeout(options.batch_timeout) {
                 Ok(event) => {
                     if event.fields.contains_key("internal_stop_event") {
                         break;
                     }
                     batch.push(event);
                 }
-                Err(e) => {
-                    //TODO(nlopes): this is not enough
-                    eprintln!("ERROR: {:?}", e);
+                Err(RecvTimeoutError::Timeout) => {
+                    expired = true;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // TODO(nlopes): is this the right behaviour?
+                    break
                 }
             };
 
-            if batch.len() >= options.max_batch_size {
+            if batch.len() >= options.max_batch_size || expired {
                 let batch_copy = batch.clone();
                 let batch_response_sender = response_sender.clone();
                 let batch_user_agent = user_agent.clone();
@@ -174,6 +180,7 @@ impl Transmission {
                     Ok(()).into_future()
                 }));
                 batch.clear();
+                expired = false;
             }
         }
 
@@ -258,12 +265,16 @@ impl Transmission {
             self.runtime.spawn(
                 self.work_sender
                     .clone()
-                    .send_timeout(event, Duration::from_millis(500))
+                    .send_timeout(event, DEFAULT_SEND_TIMEOUT)
                     .map_err(|e| {
+                        // TODO(nlopes): this is clearly not enough
                         eprintln!("Error when adding: {:#?}", e);
                     })
                     .into_future(),
             );
+        } else {
+            // TODO(nlopes): this is clearly not enough
+            eprintln!("Sender is full");
         }
     }
 
@@ -409,10 +420,7 @@ mod tests {
     fn test_bad_response() {
         use serde_json::json;
 
-        let mut transmission = Transmission::new(TransmissionOptions {
-            max_batch_size: 1,
-            ..Default::default()
-        });
+        let mut transmission = Transmission::new(TransmissionOptions::default());
         transmission.start();
 
         let api_host = &mockito::server_url();

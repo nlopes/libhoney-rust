@@ -15,6 +15,8 @@ reasons why I think this is not yet for prime time (aka: production):
 
 - I've set Metadata as a "serialisable json value" (serde_json::Value) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
 
+- I don't allow a custom logger yet
+
 For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
 [semantic versioning][semantic versioning]). Having said that, if you still want to use
 this, thank you for being brave, and make sure to open bugs against it!
@@ -160,6 +162,7 @@ pub use builder::{Builder, DynamicFieldFunc};
 pub use client::{Client, ClientOptions};
 pub use event::Event;
 pub use fields::FieldHolder;
+pub use serde_json::{json, Value};
 use transmission::Transmission;
 pub use transmission::TransmissionOptions;
 
