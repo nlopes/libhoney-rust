@@ -23,6 +23,8 @@ reasons why I think this is not yet for prime time (aka: production):
 
 - I've set Metadata as a "serialisable json value" (serde_json::Value) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
 
+- I don't allow a custom logger yet
+
 For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
 [semantic versioning][semantic versioning]). Having said that, if you still want to use
 this, thank you for being brave, and make sure to open bugs against it!
@@ -105,7 +107,7 @@ Responses have a number of fields describing the result of an attempted event se
 
 - body: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
 
-- TODO(nlopes): Err: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
+- error: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
 
 You don’t have to process responses if you’re not interested in them—simply ignoring them
 is perfectly safe. Unread responses will be dropped.
