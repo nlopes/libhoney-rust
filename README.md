@@ -4,7 +4,7 @@
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/nlopes/libhoney-rust/blob/master/LICENSE)
 [![Build Status](https://travis-ci.org/nlopes/libhoney-rust.svg?branch=master)](https://travis-ci.org/nlopes/libhoney-rust)
 
-# libhoney
+# libhoney-rust
 
 Rust library for sending data to Honeycomb.
 

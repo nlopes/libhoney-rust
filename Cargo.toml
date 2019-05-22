@@ -14,6 +14,7 @@ exclude = [".gitignore", ".travis.yml"]
 
 [lib]
 name = "libhoney"
+path = "src/lib.rs"
 
 [badges]
 travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
