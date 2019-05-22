@@ -8,6 +8,8 @@ documentation = "https://docs.rs/libhoney"
 repository = "https://github.com/nlopes/libhoney-rust.git"
 license = "MIT"
 readme = "README.md"
+keywords = ["web", "honeycomb", "api"]
+categories = ["network-programming", "asynchronous", "api-bindings", "web-programming"]
 exclude = [".gitignore", ".travis.yml"]
 
 [badges]
