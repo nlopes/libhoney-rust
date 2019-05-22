@@ -1,16 +1,19 @@
 [package]
-name = "libhoney"
+name = "libhoney-rust"
 version = "0.1.0"
 authors = ["Norberto Lopes <nlopes.ml@gmail.com>"]
 edition = "2018"
 description = "Rust library for sending data to Honeycomb"
-documentation = "https://docs.rs/libhoney"
+documentation = "https://docs.rs/libhoney-rust"
 repository = "https://github.com/nlopes/libhoney-rust.git"
 license = "MIT"
 readme = "README.md"
 keywords = ["web", "honeycomb", "api"]
 categories = ["network-programming", "asynchronous", "api-bindings", "web-programming"]
 exclude = [".gitignore", ".travis.yml"]
+
+[lib]
+name = "libhoney"
 
 [badges]
 travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
