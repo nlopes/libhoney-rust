@@ -97,7 +97,7 @@ Responses have a number of fields describing the result of an attempted event se
 
 - body: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
 
-- TODO(nlopes): Err: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
+- error: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
 
 You don’t have to process responses if you’re not interested in them—simply ignoring them
 is perfectly safe. Unread responses will be dropped.

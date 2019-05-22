@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crossbeam_channel::Receiver;
 use log::info;
 use serde_json::Value;
 
@@ -131,11 +132,8 @@ impl Client {
         self.builder.new_event()
     }
 
-    /// responses returns a Vec from which the caller can read the responses to sent
-    /// events.
-    ///
-    /// TODO(nlopes): This should be a future probably - really not happy with this
-    pub fn responses(&self) -> Vec<Response> {
+    /// responses returns a receiver channel with responses
+    pub fn responses(&self) -> Receiver<Response> {
         self.transmission.responses()
     }
 }

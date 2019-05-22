@@ -3,13 +3,13 @@ use std::time::{Duration, SystemTime};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use futures::future::{lazy, Future, IntoFuture};
-use reqwest::header;
+use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 use tokio_timer::clock::Clock;
 
-use crate::eventdata::EventData;
 use crate::event::Event;
-use crate::response::Response;
+use crate::eventdata::EventData;
+use crate::response::{HoneyResponse, Response};
 
 type Events = Vec<Event>;
 
@@ -124,19 +124,11 @@ impl Transmission {
     pub(crate) fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
-        let response_receiver = self.response_receiver.clone();
         let options = self.options.clone();
-        let responses = self.responses.clone();
-
         let user_agent = self.user_agent.clone();
 
-        // Handle responses thread
-        self.runtime.spawn(lazy(move || {
-            Transmission::handle_responses(response_receiver, responses)
-        }));
-
         // Batch sending thread
-        self.runtime.spawn(lazy(move || {
+        self.runtime.spawn(lazy(|| {
             Transmission::sender(work_receiver, response_sender, options, user_agent)
         }));
     }
@@ -160,6 +152,7 @@ impl Transmission {
                     batch.push(event);
                 }
                 Err(e) => {
+                    //TODO(nlopes): this is not enough
                     eprintln!("ERROR: {:?}", e);
                 }
             };
@@ -170,13 +163,14 @@ impl Transmission {
                 let batch_user_agent = user_agent.clone();
 
                 runtime.spawn(lazy(move || {
-                    let response = Transmission::send_batch(
+                    for response in Transmission::send_batch(
                         batch_copy,
                         options,
                         batch_user_agent,
                         SystemTime::now(),
-                    );
-                    batch_response_sender.send(response).unwrap();
+                    ) {
+                        batch_response_sender.send(response).unwrap();
+                    }
                     Ok(()).into_future()
                 }));
                 batch.clear();
@@ -187,27 +181,15 @@ impl Transmission {
         Ok(()).into_future()
     }
 
-    fn handle_responses(
-        receiver: Receiver<Response>,
-        responses: Arc<Mutex<Vec<Response>>>,
-    ) -> impl Future<Item = (), Error = ()> {
-        receiver
-            .recv_timeout(Duration::from_millis(1000))
-            .map(|s| responses.lock().unwrap().push(s))
-            .map_err(|e| {
-                eprintln!("Error when handling response: {}", e);
-            })
-            .into_future()
-    }
-
+    // TODO(nlopes): check timestamps (both setting up and updating them). Also make sure
+    // we're measuring both queue times and total times
     fn send_batch(
         events: Events,
         options: TransmissionOptions,
         user_agent: String,
         clock: SystemTime,
-    ) -> Response {
+    ) -> Vec<Response> {
         let mut opts: crate::ClientOptions = Default::default();
-        // TODO(nlopes): send batch to honeycomb here
         let mut payload: Vec<EventData> = Vec::new();
 
         for event in &events {
@@ -236,10 +218,32 @@ impl Transmission {
             .json(&payload)
             .send()
         {
-            Ok(mut res) => Response {
-                status_code: res.status(),
-                body: res.text().unwrap(),
-                duration: clock.elapsed().unwrap(),
+            Ok(mut res) => match res.status() {
+                StatusCode::OK => {
+                    let honey_responses: Vec<HoneyResponse> = res.json().unwrap();
+
+                    honey_responses
+                        .iter()
+                        .zip(events.iter())
+                        .map(|(hr, e)| Response {
+                            status_code: StatusCode::from_u16(hr.clone().status as u16).unwrap(),
+                            body: "".to_string(),
+                            duration: clock.elapsed().unwrap(),
+                            metadata: e.metadata.clone(),
+                            error: hr.error.clone(),
+                        })
+                        .collect()
+                }
+                status => events
+                    .iter()
+                    .map(|e| Response {
+                        status_code: status,
+                        body: res.text().unwrap(),
+                        duration: clock.elapsed().unwrap(),
+                        metadata: e.metadata.clone(),
+                        error: None,
+                    })
+                    .collect(),
             },
             Err(e) => panic!("What should we do? Error: {}", e),
         }
@@ -263,11 +267,9 @@ impl Transmission {
         }
     }
 
-    /// responses returns a vec  from which the caller can read the responses to sent
-    /// events.
-    /// TODO(nlopes): yucki, be better than this
-    pub fn responses(&self) -> Vec<Response> {
-        self.responses.lock().unwrap().to_vec()
+    /// responses provides access to the receiver
+    pub fn responses(&self) -> Receiver<Response> {
+        self.response_receiver.clone()
     }
 }
 
@@ -312,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch() {
+    fn test_responses() {
         use crate::fields::FieldHolder;
 
         let mut transmission = Transmission::new(TransmissionOptions {
@@ -328,7 +330,17 @@ mod tests {
         )
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body("finished batch to honeycomb")
+        .with_body(
+            r#"
+[
+  { "status":202 },
+  { "status":202 },
+  { "status":202 },
+  { "status":202 },
+  { "status":202 }
+]
+"#,
+        )
         .create();
 
         for i in 0..5 {
@@ -340,13 +352,97 @@ mod tests {
             event.add_field("id", serde_json::from_str(&i.to_string()).unwrap());
             transmission.send(event);
         }
-
-        std::thread::sleep(Duration::from_millis(1000));
-
-        let only = &transmission.responses()[0];
-        assert_eq!(only.status_code, StatusCode::OK);
-        assert_eq!(only.body, "finished batch to honeycomb".to_string());
+        for (i, response) in transmission.responses().iter().enumerate() {
+            if i == 4 {
+                break;
+            }
+            assert_eq!(response.status_code, StatusCode::ACCEPTED);
+            assert_eq!(response.body, "".to_string());
+        }
         transmission.stop();
     }
 
+    #[test]
+    fn test_metadata() {
+        use serde_json::json;
+
+        let mut transmission = Transmission::new(TransmissionOptions {
+            max_batch_size: 1,
+            ..Default::default()
+        });
+        transmission.start();
+
+        let api_host = &mockito::server_url();
+        let _m = mockito::mock(
+            "POST",
+            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"
+[
+  { "status":202 }
+]
+"#,
+        )
+        .create();
+
+        let mut event = Event::new(&ClientOptions {
+            api_key: "some_api_key".to_string(),
+            api_host: api_host.to_string(),
+            ..Default::default()
+        });
+        event.metadata = Some(json!("some metadata in a string"));
+        transmission.send(event);
+
+        if let Some(response) = transmission.responses().iter().next() {
+            assert_eq!(response.status_code, StatusCode::ACCEPTED);
+            assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+        } else {
+            panic!("did not receive an expected response");
+        }
+        transmission.stop();
+    }
+
+    #[test]
+    fn test_bad_response() {
+        use serde_json::json;
+
+        let mut transmission = Transmission::new(TransmissionOptions {
+            max_batch_size: 1,
+            ..Default::default()
+        });
+        transmission.start();
+
+        let api_host = &mockito::server_url();
+        let _m = mockito::mock(
+            "POST",
+            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+        )
+        .with_status(400)
+        .with_header("content-type", "application/json")
+        .with_body("request body is malformed and cannot be read as JSON")
+        .create();
+
+        let mut event = Event::new(&ClientOptions {
+            api_key: "some_api_key".to_string(),
+            api_host: api_host.to_string(),
+            ..Default::default()
+        });
+
+        event.metadata = Some(json!("some metadata in a string"));
+        transmission.send(event);
+
+        if let Some(response) = transmission.responses().iter().next() {
+            assert_eq!(response.status_code, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response.body,
+                "request body is malformed and cannot be read as JSON".to_string()
+            );
+        } else {
+            panic!("did not receive an expected response");
+        }
+        transmission.stop();
+    }
 }

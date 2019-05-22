@@ -15,7 +15,7 @@ pub struct Event {
     pub(crate) options: ClientOptions,
     pub(crate) timestamp: DateTime<Utc>,
     pub(crate) fields: HashMap<String, Value>,
-    metadata: Value,
+    pub(crate) metadata: Option<Value>,
 }
 
 impl FieldHolder for Event {
@@ -31,7 +31,7 @@ impl Event {
             options: options.clone(),
             timestamp: Utc::now(),
             fields: HashMap::new(),
-            metadata: Value::Null,
+            metadata: None,
         }
     }
 
@@ -71,7 +71,7 @@ impl Event {
             options: ClientOptions::default(),
             timestamp: Utc::now(),
             fields: h,
-            metadata: Value::Null,
+            metadata: None,
         }
     }
 }
@@ -108,7 +108,7 @@ mod tests {
         )
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body("finished batch to honeycomb")
+        .with_body("[{ \"status\": 200 }]")
         .create();
 
         let options = ClientOptions {
@@ -128,9 +128,8 @@ mod tests {
         e.add_field("field_name", Value::String("field_value".to_string()));
         e.send(&mut client);
 
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-        let only = &client.transmission.responses()[0];
-        assert_eq!(only.status_code, StatusCode::OK);
-        assert_eq!(only.body, "finished batch to honeycomb".to_string());
+        if let Some(only) = client.transmission.responses().iter().next() {
+            assert_eq!(only.status_code, StatusCode::OK);
+        }
     }
 }
