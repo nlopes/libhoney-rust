@@ -4,9 +4,9 @@ use serde_json::Value;
 
 use crate::event::Event;
 use crate::fields::FieldHolder;
-use crate::ClientOptions;
+use crate::client::Options;
 
-/// Shorthand type for the function to be passed to the add_dynamic_field calls
+/// Shorthand type for the function to be passed to the `add_dynamic_field` calls
 pub type DynamicFieldFunc = fn() -> Value;
 
 impl FieldHolder for Builder {
@@ -19,15 +19,15 @@ impl FieldHolder for Builder {
 /// override settings.
 #[derive(Debug, Clone)]
 pub struct Builder {
-    options: ClientOptions,
+    options: Options,
     pub(crate) fields: HashMap<String, Value>,
     dynamic_fields: Vec<(String, DynamicFieldFunc)>,
 }
 
 impl Builder {
     /// Creates a new event Builder with emtpy Static or Dynamic fields.
-    pub fn new(options: ClientOptions) -> Self {
-        Builder {
+    pub fn new(options: Options) -> Self {
+        Self {
             options,
             fields: HashMap::new(),
             dynamic_fields: Vec::new(),
@@ -46,7 +46,7 @@ impl Builder {
         let mut e = Event::new(&self.options);
         e.fields = self.fields.clone();
         for (name, func) in &self.dynamic_fields {
-            e.add_field(&name, func())
+            e.add_field(name, func())
         }
         e
     }

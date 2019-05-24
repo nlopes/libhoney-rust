@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-/// FieldHolder implements common functions that operate on the `fields` component of a
+/// `FieldHolder` implements common functions that operate on the `fields` component of a
 /// struct (usually Event or Builder). This avoids some duplication of code.
 pub trait FieldHolder {
     /// add data to the current (event/builder) fields
@@ -12,7 +12,7 @@ pub trait FieldHolder {
 
     /// add_field adds a field to the current (event/builder) fields
     fn add_field(&mut self, name: &str, value: Value) {
-        self.get_fields().insert(name.to_string(), value.clone());
+        self.get_fields().insert(name.to_string(), value);
     }
 
     /// add_func iterates over the results from func (until Err) and adds the results to

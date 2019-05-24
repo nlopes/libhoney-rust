@@ -13,7 +13,7 @@ reasons why I think this is not yet for prime time (aka: production):
 
 - I tried to get to a workable state quickly and so I (ab)used .unwrap() a lot - that's bad in a library as it will panic your client.
 
-- I've set Metadata as a "serialisable json value" (serde_json::Value) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
+- I've set Metadata as a "serialisable json value" (`serde_json::Value`) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
 
 - I don't allow a custom logger yet
 
@@ -40,7 +40,7 @@ will terminate all background threads.
 
 ```rust
 let client = libhoney::init(libhoney::Config{
-  options: libhoney::ClientOptions {
+  options: libhoney::client::Options {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
     ..Default::default()
@@ -66,8 +66,9 @@ Upon calling .send(), the event is dispatched to be sent to Honeycomb. All libra
 defaults that will allow your application to function as smoothly as possible during error
 conditions.
 
-In its simplest form, you can add a single attribute to an event with the .add_field(k, v)
-method. If you add the same key multiple times, only the last value added will be kept.
+In its simplest form, you can add a single attribute to an event with the `.add_field(k,
+v)` method. If you add the same key multiple times, only the last value added will be
+kept.
 
 More complex structures (maps and structs—things that can be serialized into a JSON
 object) can be added to an event with the .add(data) method.
@@ -91,15 +92,15 @@ populating the .metadata attribute directly on an event.
 
 Responses have a number of fields describing the result of an attempted event send:
 
-- metadata: the metadata you attached to the event to which this response corresponds
+- `metadata`: the metadata you attached to the event to which this response corresponds
 
-- status_code: the HTTP status code returned by Honeycomb when trying to send the event. 2xx indicates success.
+- `status_code`: the HTTP status code returned by Honeycomb when trying to send the event. 2xx indicates success.
 
-- duration: the time.Duration it took to send the event.
+- `duration`: the time.Duration it took to send the event.
 
-- body: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
+- `body`: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
 
-- error: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
+- `error`: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
 
 You don’t have to process responses if you’re not interested in them—simply ignoring them
 is perfectly safe. Unread responses will be dropped.
@@ -114,7 +115,7 @@ you.
 ```rust
 # use std::collections::HashMap;
 # use serde_json::{json, Value};
-# use libhoney::{init, Config, ClientOptions};
+# use libhoney::{init, Config};
 # let api_host = &mockito::server_url();
 # let _m = mockito::mock(
 #    "POST",
@@ -125,7 +126,7 @@ you.
 # .with_body("finished batch to honeycomb")
 # .create();
 
-# let options = ClientOptions{api_host: api_host.to_string(), ..Default::default()};
+# let options = libhoney::client::Options{api_host: api_host.to_string(), ..Default::default()};
 use libhoney::FieldHolder; // Add trait to allow for adding fields
 // Call init to get a client
 let mut client = init(libhoney::Config {
@@ -151,20 +152,19 @@ ev.send(&mut client);
 #![deny(missing_docs)]
 
 mod builder;
-mod client;
+pub mod client;
 mod event;
 mod eventdata;
 mod fields;
 mod response;
-mod transmission;
+pub mod transmission;
 
 pub use builder::{Builder, DynamicFieldFunc};
-pub use client::{Client, ClientOptions};
+pub use client::Client;
 pub use event::Event;
 pub use fields::FieldHolder;
 pub use serde_json::{json, Value};
 use transmission::Transmission;
-pub use transmission::TransmissionOptions;
 
 /// Config allows the user to customise the initialisation of the library (effectively the
 /// Client)
@@ -175,16 +175,16 @@ pub struct Config {
     /// configuration of the client itself. The other config options are specific to a
     /// given transmission Sender and should be specified there if the defaults need to be
     /// overridden.
-    pub options: ClientOptions,
+    pub options: client::Options,
 
     /// Configuration for the underlying sender. It is safe (and recommended) to leave
     /// these values at their defaults. You cannot change these values after calling
     /// init()
-    pub transmission_options: TransmissionOptions,
+    pub transmission_options: transmission::Options,
 }
 
-/// init is called on app initialisation and passed a Config. A Config has two sets of
-/// options (ClientOptions and TransmissionOptions).
+/// init is called on app initialisation and passed a `Config`. A `Config` has two sets of
+/// options (`client::Options` and `transmission::Options`).
 pub fn init(config: Config) -> Client {
     let transmission = Transmission::new(config.transmission_options);
     Client::new(config.options, transmission)

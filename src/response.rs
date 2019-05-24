@@ -13,6 +13,6 @@ pub struct Response {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HoneyResponse {
-    pub(crate) status: usize,
+    pub(crate) status: u16,
     pub(crate) error: Option<String>,
 }

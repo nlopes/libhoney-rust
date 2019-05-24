@@ -4,15 +4,14 @@ use chrono::prelude::{DateTime, Utc};
 use rand::Rng;
 use serde_json::Value;
 
-use crate::client::Client;
+use crate::client;
 use crate::fields::FieldHolder;
-use crate::ClientOptions;
 
-/// Event is used to hold data that can be sent to Honeycomb. It can also specify
-/// overrides of the config settings (ClientOptions).
+/// `Event` is used to hold data that can be sent to Honeycomb. It can also specify
+/// overrides of the config settings (`client::Options`).
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub(crate) options: ClientOptions,
+    pub(crate) options: client::Options,
     pub(crate) timestamp: DateTime<Utc>,
     pub(crate) fields: HashMap<String, Value>,
     pub(crate) metadata: Option<Value>,
@@ -26,8 +25,8 @@ impl FieldHolder for Event {
 
 impl Event {
     /// new creates a new event with the passed ClientOptions
-    pub fn new(options: &ClientOptions) -> Self {
-        Event {
+    pub fn new(options: &client::Options) -> Self {
+        Self {
             options: options.clone(),
             timestamp: Utc::now(),
             fields: HashMap::new(),
@@ -49,7 +48,7 @@ impl Event {
     ///
     /// Once you send an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send(&self, client: &mut Client) {
+    pub fn send(&self, client: &mut client::Client) {
         if self.should_drop() {
             return;
         }
@@ -67,8 +66,8 @@ impl Event {
         let mut h: HashMap<String, Value> = HashMap::new();
         h.insert("internal_stop_event".to_string(), Value::Null);
 
-        Event {
-            options: ClientOptions::default(),
+        Self {
+            options: client::Options::default(),
             timestamp: Utc::now(),
             fields: h,
             metadata: None,
@@ -82,11 +81,11 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::*;
-    use crate::ClientOptions;
+    use crate::client;
 
     #[test]
     fn test_add() {
-        let mut e = Event::new(&ClientOptions {
+        let mut e = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
             ..Default::default()
         });
@@ -99,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_send() {
-        use crate::{Transmission, TransmissionOptions};
+        use crate::transmission;
 
         let api_host = &mockito::server_url();
         let _m = mockito::mock(
@@ -111,14 +110,14 @@ mod tests {
         .with_body("[{ \"status\": 200 }]")
         .create();
 
-        let options = ClientOptions {
+        let options = client::Options {
             api_host: api_host.to_string(),
             ..Default::default()
         };
 
-        let mut client = Client::new(
+        let mut client = client::Client::new(
             options.clone(),
-            Transmission::new(TransmissionOptions {
+            transmission::Transmission::new(transmission::Options {
                 max_batch_size: 1,
                 ..Default::default()
             }),

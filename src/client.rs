@@ -1,3 +1,7 @@
+/*! `Client` is the interface to create new builders, events and send the latter somewhere
+ * using `Transmission`.
+
+*/
 use std::collections::HashMap;
 
 use crossbeam_channel::Receiver;
@@ -15,10 +19,10 @@ const DEFAULT_API_KEY: &str = "";
 const DEFAULT_DATASET: &str = "librust-dataset";
 const DEFAULT_SAMPLE_RATE: usize = 1;
 
-/// ClientOptions is a subset of the global libhoney config that focuses on the
+/// Options is a subset of the global libhoney config that focuses on the
 /// configuration of the client itself.
 #[derive(Debug, Clone)]
-pub struct ClientOptions {
+pub struct Options {
     /// api_key is the Honeycomb authentication token. If it is specified during libhoney
     /// initialization, it will be used as the default API key for all events. If absent,
     /// API key must be explicitly set on a builder or event. Find your team's API keys at
@@ -41,9 +45,9 @@ pub struct ClientOptions {
     pub sample_rate: usize,
 }
 
-impl Default for ClientOptions {
+impl Default for Options {
     fn default() -> Self {
-        ClientOptions {
+        Self {
             api_key: DEFAULT_API_KEY.to_string(),
             dataset: DEFAULT_DATASET.to_string(),
             api_host: DEFAULT_API_HOST.to_string(),
@@ -56,22 +60,22 @@ impl Default for ClientOptions {
 /// somewhere.
 #[derive(Debug)]
 pub struct Client {
-    pub(crate) options: ClientOptions,
+    pub(crate) options: Options,
     pub(crate) transmission: Transmission,
 
     builder: Builder,
 }
 
 impl Client {
-    /// new creates a new Client with the provided ClientOptions and initialised
+    /// new creates a new Client with the provided Options and initialised
     /// Transmission.
     ///
     /// Once populated, it auto starts the transmission background threads and is ready to
     /// send events.
-    pub fn new(options: ClientOptions, transmission: Transmission) -> Self {
+    pub fn new(options: Options, transmission: Transmission) -> Self {
         info!("Creating honey client");
 
-        let mut c = Client {
+        let mut c = Self {
             transmission,
             options: options.clone(),
             builder: Builder::new(options),

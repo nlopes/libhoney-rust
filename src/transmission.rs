@@ -1,7 +1,11 @@
+/*! Transmission handles the transmission of events to Honeycomb
+
+*/
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use log::{error, info};
 use futures::future::{lazy, Future, IntoFuture};
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
@@ -27,9 +31,9 @@ const DEFAULT_PENDING_WORK_CAPACITY: usize = 10_000;
 // DEFAULT_SEND_TIMEOUT how much to wait to send an event
 const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_millis(1000);
 
-/// TransmissionOptions includes various options to tweak the behavious of the sender.
+/// Options includes various options to tweak the behavious of the sender.
 #[derive(Debug, Clone)]
-pub struct TransmissionOptions {
+pub struct Options {
     /// how many events to collect into a batch before sending. Overrides
     /// DEFAULT_MAX_BATCH_SIZE.
     pub max_batch_size: usize,
@@ -53,9 +57,9 @@ pub struct TransmissionOptions {
     pub user_agent_addition: Option<String>,
 }
 
-impl Default for TransmissionOptions {
+impl Default for Options {
     fn default() -> Self {
-        TransmissionOptions {
+        Self {
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
             max_concurrent_batches: DEFAULT_MAX_CONCURRENT_BATCHES,
             batch_timeout: DEFAULT_BATCH_TIMEOUT,
@@ -65,10 +69,10 @@ impl Default for TransmissionOptions {
     }
 }
 
-/// Transmission handles collecting and sending individual events to Honeycomb
+/// `Transmission` handles collecting and sending individual events to Honeycomb
 #[derive(Debug)]
 pub struct Transmission {
-    pub(crate) options: TransmissionOptions,
+    pub(crate) options: Options,
     user_agent: String,
 
     runtime: Runtime,
@@ -88,7 +92,7 @@ impl Drop for Transmission {
 }
 
 impl Transmission {
-    fn new_runtime(options: Option<&TransmissionOptions>) -> Runtime {
+    fn new_runtime(options: Option<&Options>) -> Runtime {
         let mut builder = Builder::new();
         if let Some(opts) = options {
             builder
@@ -104,13 +108,13 @@ impl Transmission {
             .unwrap()
     }
 
-    pub(crate) fn new(options: TransmissionOptions) -> Self {
-        let runtime = Transmission::new_runtime(None);
+    pub(crate) fn new(options: Options) -> Self {
+        let runtime = Self::new_runtime(None);
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
-        Transmission {
+        Self {
             options,
             runtime,
             work_sender,
@@ -128,19 +132,20 @@ impl Transmission {
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
 
+        info!("Starting sender thread");
         // Batch sending thread
         self.runtime.spawn(lazy(|| {
-            Transmission::sender(work_receiver, response_sender, options, user_agent)
+            Self::sender(work_receiver, response_sender, options, user_agent)
         }));
     }
 
     fn sender(
         work_receiver: Receiver<Event>,
         response_sender: Sender<Response>,
-        options: TransmissionOptions,
+        options: Options,
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
-        let mut runtime = Transmission::new_runtime(Some(&options));
+        let mut runtime = Self::new_runtime(Some(&options));
         let mut batch: Events = Vec::with_capacity(options.max_batch_size);
         let mut expired = false;
 
@@ -150,6 +155,7 @@ impl Transmission {
             match work_receiver.recv_timeout(options.batch_timeout) {
                 Ok(event) => {
                     if event.fields.contains_key("internal_stop_event") {
+                        info!("got 'internal_stop_event' event");
                         break;
                     }
                     batch.push(event);
@@ -166,15 +172,12 @@ impl Transmission {
             if batch.len() >= options.max_batch_size || expired {
                 let batch_copy = batch.clone();
                 let batch_response_sender = response_sender.clone();
-                let batch_user_agent = user_agent.clone();
+                let batch_user_agent = user_agent.to_string();
 
                 runtime.spawn(lazy(move || {
-                    for response in Transmission::send_batch(
-                        batch_copy,
-                        options,
-                        batch_user_agent,
-                        Instant::now(),
-                    ) {
+                    for response in
+                        Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
+                    {
                         batch_response_sender.send(response).unwrap();
                     }
                     Ok(()).into_future()
@@ -183,8 +186,9 @@ impl Transmission {
                 expired = false;
             }
         }
-
+        info!("Shutting down batch processing runtime");
         runtime.shutdown_now().wait().unwrap();
+        info!("Batch processing runtime shut down");
         Ok(()).into_future()
     }
 
@@ -192,11 +196,11 @@ impl Transmission {
     // we're measuring both queue times and total times
     fn send_batch(
         events: Events,
-        options: TransmissionOptions,
+        options: Options,
         user_agent: String,
         clock: Instant,
     ) -> Vec<Response> {
-        let mut opts: crate::ClientOptions = Default::default();
+        let mut opts: crate::client::Options = crate::client::Options::default();
         let mut payload: Vec<EventData> = Vec::new();
 
         for event in &events {
@@ -233,7 +237,7 @@ impl Transmission {
                         .iter()
                         .zip(events.iter())
                         .map(|(hr, e)| Response {
-                            status_code: StatusCode::from_u16(hr.clone().status as u16).ok(),
+                            status_code: StatusCode::from_u16(hr.status).ok(),
                             body: None,
                             duration: clock.elapsed(),
                             metadata: e.metadata.clone(),
@@ -272,11 +276,16 @@ impl Transmission {
     }
 
     pub(crate) fn stop(&mut self) {
+        info!("Sending stop event");
         self.work_sender.send(Event::stop_event()).unwrap();
     }
 
     pub(crate) fn send(&mut self, event: Event) {
-        if !self.work_sender.is_full() {
+        if self.work_sender.is_full() {
+            // TODO(nlopes): this is clearly not enough
+            eprintln!("Sender is full");
+            error!("work sender is full");
+        } else {
             self.runtime.spawn(
                 self.work_sender
                     .clone()
@@ -287,9 +296,6 @@ impl Transmission {
                     })
                     .into_future(),
             );
-        } else {
-            // TODO(nlopes): this is clearly not enough
-            eprintln!("Sender is full");
         }
     }
 
@@ -305,7 +311,7 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::*;
-    use crate::ClientOptions;
+    use crate::client;
 
     #[test]
     fn test_defaults() {
@@ -329,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_modifiable_defaults() {
-        let transmission = Transmission::new(TransmissionOptions {
+        let transmission = Transmission::new(Options {
             user_agent_addition: Some(" something/0.3".to_string()),
             ..Default::default()
         });
@@ -343,7 +349,7 @@ mod tests {
     fn test_responses() {
         use crate::fields::FieldHolder;
 
-        let mut transmission = Transmission::new(TransmissionOptions {
+        let mut transmission = Transmission::new(Options {
             max_batch_size: 5,
             ..Default::default()
         });
@@ -370,7 +376,7 @@ mod tests {
         .create();
 
         for i in 0..5 {
-            let mut event = Event::new(&ClientOptions {
+            let mut event = Event::new(&client::Options {
                 api_key: "some_api_key".to_string(),
                 api_host: api_host.to_string(),
                 ..Default::default()
@@ -392,7 +398,7 @@ mod tests {
     fn test_metadata() {
         use serde_json::json;
 
-        let mut transmission = Transmission::new(TransmissionOptions {
+        let mut transmission = Transmission::new(Options {
             max_batch_size: 1,
             ..Default::default()
         });
@@ -414,7 +420,7 @@ mod tests {
         )
         .create();
 
-        let mut event = Event::new(&ClientOptions {
+        let mut event = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
             api_host: api_host.to_string(),
             ..Default::default()
@@ -435,7 +441,7 @@ mod tests {
     fn test_bad_response() {
         use serde_json::json;
 
-        let mut transmission = Transmission::new(TransmissionOptions::default());
+        let mut transmission = Transmission::new(Options::default());
         transmission.start();
 
         let api_host = &mockito::server_url();
@@ -448,7 +454,7 @@ mod tests {
         .with_body("request body is malformed and cannot be read as JSON")
         .create();
 
-        let mut event = Event::new(&ClientOptions {
+        let mut event = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
             api_host: api_host.to_string(),
             ..Default::default()
