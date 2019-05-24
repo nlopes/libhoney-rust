@@ -129,7 +129,7 @@ mod tests {
         e.send(&mut client);
 
         if let Some(only) = client.transmission.responses().iter().next() {
-            assert_eq!(only.status_code, StatusCode::OK);
+            assert_eq!(only.status_code, Some(StatusCode::OK));
         }
     }
 }

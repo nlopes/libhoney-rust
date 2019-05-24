@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use futures::future::{lazy, Future, IntoFuture};
@@ -173,7 +173,7 @@ impl Transmission {
                         batch_copy,
                         options,
                         batch_user_agent,
-                        SystemTime::now(),
+                        Instant::now(),
                     ) {
                         batch_response_sender.send(response).unwrap();
                     }
@@ -194,7 +194,7 @@ impl Transmission {
         events: Events,
         options: TransmissionOptions,
         user_agent: String,
-        clock: SystemTime,
+        clock: Instant,
     ) -> Vec<Response> {
         let mut opts: crate::ClientOptions = Default::default();
         let mut payload: Vec<EventData> = Vec::new();
@@ -233,9 +233,9 @@ impl Transmission {
                         .iter()
                         .zip(events.iter())
                         .map(|(hr, e)| Response {
-                            status_code: StatusCode::from_u16(hr.clone().status as u16).unwrap(),
-                            body: "".to_string(),
-                            duration: clock.elapsed().unwrap(),
+                            status_code: StatusCode::from_u16(hr.clone().status as u16).ok(),
+                            body: None,
+                            duration: clock.elapsed(),
                             metadata: e.metadata.clone(),
                             error: hr.error.clone(),
                         })
@@ -243,16 +243,31 @@ impl Transmission {
                 }
                 status => events
                     .iter()
-                    .map(|e| Response {
-                        status_code: status,
-                        body: res.text().unwrap(),
-                        duration: clock.elapsed().unwrap(),
-                        metadata: e.metadata.clone(),
-                        error: None,
+                    .map(|e| {
+                        let body = match res.text() {
+                            Ok(t) => t,
+                            Err(e) => format!("HTTP Error but could not read response body: {}", e),
+                        };
+                        Response {
+                            status_code: Some(status),
+                            body: Some(body),
+                            duration: clock.elapsed(),
+                            metadata: e.metadata.clone(),
+                            error: None,
+                        }
                     })
                     .collect(),
             },
-            Err(e) => panic!("What should we do? Error: {}", e),
+            Err(err) => events
+                .iter()
+                .map(|e| Response {
+                    status_code: None,
+                    body: None,
+                    error: Some(err.to_string()),
+                    duration: clock.elapsed(),
+                    metadata: e.metadata.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -367,8 +382,8 @@ mod tests {
             if i == 4 {
                 break;
             }
-            assert_eq!(response.status_code, StatusCode::ACCEPTED);
-            assert_eq!(response.body, "".to_string());
+            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response.body, None);
         }
         transmission.stop();
     }
@@ -408,7 +423,7 @@ mod tests {
         transmission.send(event);
 
         if let Some(response) = transmission.responses().iter().next() {
-            assert_eq!(response.status_code, StatusCode::ACCEPTED);
+            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
             assert_eq!(response.metadata, Some(json!("some metadata in a string")));
         } else {
             panic!("did not receive an expected response");
@@ -443,10 +458,10 @@ mod tests {
         transmission.send(event);
 
         if let Some(response) = transmission.responses().iter().next() {
-            assert_eq!(response.status_code, StatusCode::BAD_REQUEST);
+            assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
             assert_eq!(
                 response.body,
-                "request body is malformed and cannot be read as JSON".to_string()
+                Some("request body is malformed and cannot be read as JSON".to_string())
             );
         } else {
             panic!("did not receive an expected response");

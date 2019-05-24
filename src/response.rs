@@ -4,8 +4,8 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {
-    pub status_code: StatusCode,
-    pub body: String,
+    pub status_code: Option<StatusCode>,
+    pub body: Option<String>,
     pub duration: std::time::Duration,
     pub metadata: Option<Value>,
     pub error: Option<String>,
