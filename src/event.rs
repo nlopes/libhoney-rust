@@ -7,14 +7,16 @@ use serde_json::Value;
 use crate::client;
 use crate::fields::FieldHolder;
 
+pub type Metadata = Option<Value>;
+
 /// `Event` is used to hold data that can be sent to Honeycomb. It can also specify
 /// overrides of the config settings (`client::Options`).
 #[derive(Debug, Clone)]
 pub struct Event {
     pub(crate) options: client::Options,
-    pub timestamp: DateTime<Utc>,
+    pub(crate) timestamp: DateTime<Utc>,
     pub(crate) fields: HashMap<String, Value>,
-    pub(crate) metadata: Option<Value>,
+    pub(crate) metadata: Metadata,
     sent: bool,
 }
 
@@ -80,6 +82,21 @@ impl Event {
 
         self.sent = true;
         client.transmission.send(self.clone());
+    }
+
+    /// Set timestamp on the event
+    pub fn set_timestamp(&mut self, timestamp: DateTime<Utc>) {
+        self.timestamp = timestamp;
+    }
+
+    /// Set metadata on the event
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
+    }
+
+    /// Get event metadata
+    pub fn metadata(&self) -> Metadata {
+        self.metadata.clone()
     }
 
     fn should_drop(&self) -> bool {

@@ -161,7 +161,7 @@ pub mod transmission;
 
 pub use builder::{Builder, DynamicFieldFunc};
 pub use client::Client;
-pub use event::Event;
+pub use event::{Event, Metadata};
 pub use fields::FieldHolder;
 pub use serde_json::{json, Value};
 use transmission::Transmission;
