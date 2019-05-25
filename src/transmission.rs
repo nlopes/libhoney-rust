@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
-use log::{error, info};
 use futures::future::{lazy, Future, IntoFuture};
+use log::{error, info};
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 use tokio_timer::clock::Clock;
@@ -16,6 +16,37 @@ use crate::eventdata::EventData;
 use crate::response::{HoneyResponse, Response};
 
 type Events = Vec<Event>;
+
+trait EventsResponse {
+    fn to_response(
+        &self,
+        status: Option<StatusCode>,
+        body: Option<String>,
+        clock: Instant,
+        error: Option<String>,
+    ) -> Vec<Response>;
+}
+
+impl EventsResponse for Events {
+    fn to_response(
+        &self,
+        status: Option<StatusCode>,
+        body: Option<String>,
+        clock: Instant,
+        error: Option<String>,
+    ) -> Vec<Response> {
+        let spent = Duration::from_secs(clock.elapsed().as_secs() / self.len() as u64);
+        self.iter()
+            .map(|ev| Response {
+                status_code: status,
+                body: body.clone(),
+                duration: spent,
+                metadata: ev.metadata.clone(),
+                error: error.clone(),
+            })
+            .collect()
+    }
+}
 
 const BATCH_ENDPOINT: &str = "/1/batch/";
 
@@ -29,7 +60,7 @@ const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 // DEFAULT_PENDING_WORK_CAPACITY how many events to queue up for busy batches
 const DEFAULT_PENDING_WORK_CAPACITY: usize = 10_000;
 // DEFAULT_SEND_TIMEOUT how much to wait to send an event
-const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_millis(1000);
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_millis(1_000);
 
 /// Options includes various options to tweak the behavious of the sender.
 #[derive(Debug, Clone)]
@@ -42,8 +73,7 @@ pub struct Options {
     /// DEFAULT_MAX_CONCURRENT_BATCHES.
     pub max_concurrent_batches: usize,
 
-    /// how often to send off batches. Overrides DEFAULT_BATCH_TIMEOUT. (TODO(nlopes):
-    /// Currently unused)
+    /// how often to send off batches. Overrides DEFAULT_BATCH_TIMEOUT.
     pub batch_timeout: Duration,
 
     /// how many events to allow to pile up. Overrides DEFAULT_PENDING_WORK_CAPACITY
@@ -105,7 +135,7 @@ impl Transmission {
             .name_prefix("libhoney-rust")
             .stack_size(3 * 1024 * 1024)
             .build()
-            .unwrap()
+            .expect("unable to start runtime")
     }
 
     pub(crate) fn new(options: Options) -> Self {
@@ -133,13 +163,13 @@ impl Transmission {
         let user_agent = self.user_agent.clone();
 
         info!("Starting sender thread");
-        // Batch sending thread
+        // thread that processes all the work received
         self.runtime.spawn(lazy(|| {
-            Self::sender(work_receiver, response_sender, options, user_agent)
+            Self::process_work(work_receiver, response_sender, options, user_agent)
         }));
     }
 
-    fn sender(
+    fn process_work(
         work_receiver: Receiver<Event>,
         response_sender: Sender<Response>,
         options: Options,
@@ -178,7 +208,9 @@ impl Transmission {
                     for response in
                         Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
                     {
-                        batch_response_sender.send(response).unwrap();
+                        batch_response_sender
+                            .send(response)
+                            .expect("unable to enqueue batch response");
                     }
                     Ok(()).into_future()
                 }));
@@ -187,7 +219,10 @@ impl Transmission {
             }
         }
         info!("Shutting down batch processing runtime");
-        runtime.shutdown_now().wait().unwrap();
+        runtime
+            .shutdown_now()
+            .wait()
+            .expect("unable to shutdown batch processing runtime");
         info!("Batch processing runtime shut down");
         Ok(()).into_future()
     }
@@ -231,7 +266,16 @@ impl Transmission {
         {
             Ok(mut res) => match res.status() {
                 StatusCode::OK => {
-                    let honey_responses: Vec<HoneyResponse> = res.json().unwrap();
+                    let mut honey_responses: Vec<HoneyResponse>;
+                    match res.json() {
+                        Ok(r) => honey_responses = r,
+                        Err(e) => {
+                            return events.to_response(None, None, clock, Some(e.to_string()));
+                        }
+                    }
+                    let spent = Duration::from_secs(
+                        clock.elapsed().as_secs() / (honey_responses.len() as u64),
+                    );
 
                     honey_responses
                         .iter()
@@ -239,45 +283,29 @@ impl Transmission {
                         .map(|(hr, e)| Response {
                             status_code: StatusCode::from_u16(hr.status).ok(),
                             body: None,
-                            duration: clock.elapsed(),
+                            duration: spent,
                             metadata: e.metadata.clone(),
                             error: hr.error.clone(),
                         })
                         .collect()
                 }
-                status => events
-                    .iter()
-                    .map(|e| {
-                        let body = match res.text() {
-                            Ok(t) => t,
-                            Err(e) => format!("HTTP Error but could not read response body: {}", e),
-                        };
-                        Response {
-                            status_code: Some(status),
-                            body: Some(body),
-                            duration: clock.elapsed(),
-                            metadata: e.metadata.clone(),
-                            error: None,
-                        }
-                    })
-                    .collect(),
+                status => {
+                    let body = match res.text() {
+                        Ok(t) => t,
+                        Err(e) => format!("HTTP Error but could not read response body: {}", e),
+                    };
+                    events.to_response(Some(status), Some(body), clock, None)
+                }
             },
-            Err(err) => events
-                .iter()
-                .map(|e| Response {
-                    status_code: None,
-                    body: None,
-                    error: Some(err.to_string()),
-                    duration: clock.elapsed(),
-                    metadata: e.metadata.clone(),
-                })
-                .collect(),
+            Err(err) => events.to_response(None, None, clock, Some(err.to_string())),
         }
     }
 
     pub(crate) fn stop(&mut self) {
         info!("Sending stop event");
-        self.work_sender.send(Event::stop_event()).unwrap();
+        self.work_sender
+            .send(Event::stop_event())
+            .expect("unable to send signal to stop runtime");
     }
 
     pub(crate) fn send(&mut self, event: Event) {
@@ -315,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_defaults() {
-        let transmission = Transmission::new(Default::default());
+        let transmission = Transmission::new(Options::default());
         assert_eq!(
             transmission.user_agent,
             format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION"))
@@ -337,7 +365,7 @@ mod tests {
     fn test_modifiable_defaults() {
         let transmission = Transmission::new(Options {
             user_agent_addition: Some(" something/0.3".to_string()),
-            ..Default::default()
+            ..Options::default()
         });
         assert_eq!(
             transmission.options.user_agent_addition,
@@ -351,7 +379,7 @@ mod tests {
 
         let mut transmission = Transmission::new(Options {
             max_batch_size: 5,
-            ..Default::default()
+            ..Options::default()
         });
         transmission.start();
 
@@ -379,7 +407,7 @@ mod tests {
             let mut event = Event::new(&client::Options {
                 api_key: "some_api_key".to_string(),
                 api_host: api_host.to_string(),
-                ..Default::default()
+                ..client::Options::default()
             });
             event.add_field("id", serde_json::from_str(&i.to_string()).unwrap());
             transmission.send(event);
@@ -400,7 +428,7 @@ mod tests {
 
         let mut transmission = Transmission::new(Options {
             max_batch_size: 1,
-            ..Default::default()
+            ..Options::default()
         });
         transmission.start();
 
@@ -423,7 +451,7 @@ mod tests {
         let mut event = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
             api_host: api_host.to_string(),
-            ..Default::default()
+            ..client::Options::default()
         });
         event.metadata = Some(json!("some metadata in a string"));
         transmission.send(event);
@@ -457,7 +485,7 @@ mod tests {
         let mut event = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
             api_host: api_host.to_string(),
-            ..Default::default()
+            ..client::Options::default()
         });
 
         event.metadata = Some(json!("some metadata in a string"));

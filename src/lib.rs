@@ -43,9 +43,9 @@ let client = libhoney::init(libhoney::Config{
   options: libhoney::client::Options {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
-    ..Default::default()
+    ..libhoney::client::Options::default()
   },
-  transmission_options: Default::default(),
+  transmission_options: libhoney::transmission::Options::default(),
 });
 
 client.close();
@@ -126,12 +126,12 @@ you.
 # .with_body("finished batch to honeycomb")
 # .create();
 
-# let options = libhoney::client::Options{api_host: api_host.to_string(), ..Default::default()};
+# let options = libhoney::client::Options{api_host: api_host.to_string(), ..libhoney::client::Options::default()};
 use libhoney::FieldHolder; // Add trait to allow for adding fields
 // Call init to get a client
 let mut client = init(libhoney::Config {
   options: options,
-  transmission_options: Default::default(),
+  transmission_options: libhoney::transmission::Options::default(),
 });
 
 let mut data: HashMap<String, Value> = HashMap::new();
@@ -185,6 +185,7 @@ pub struct Config {
 
 /// init is called on app initialisation and passed a `Config`. A `Config` has two sets of
 /// options (`client::Options` and `transmission::Options`).
+#[inline]
 pub fn init(config: Config) -> Client {
     let transmission = Transmission::new(config.transmission_options);
     Client::new(config.options, transmission)
@@ -197,9 +198,10 @@ mod tests {
     #[test]
     fn test_init() {
         let client = init(Config {
-            options: Default::default(),
-            transmission_options: Default::default(),
+            options: client::Options::default(),
+            transmission_options: transmission::Options::default(),
         });
         assert_eq!(client.options.dataset, "librust-dataset");
+        client.close();
     }
 }

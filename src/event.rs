@@ -87,7 +87,7 @@ mod tests {
     fn test_add() {
         let mut e = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
-            ..Default::default()
+            ..client::Options::default()
         });
         let now = Value::String(Utc::now().to_rfc3339());
         e.add_field("my_timestamp", now.clone());
@@ -112,14 +112,14 @@ mod tests {
 
         let options = client::Options {
             api_host: api_host.to_string(),
-            ..Default::default()
+            ..client::Options::default()
         };
 
         let mut client = client::Client::new(
             options.clone(),
             transmission::Transmission::new(transmission::Options {
                 max_batch_size: 1,
-                ..Default::default()
+                ..transmission::Options::default()
             }),
         );
 

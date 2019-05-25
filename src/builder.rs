@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::client::Options;
 use crate::event::Event;
 use crate::fields::FieldHolder;
-use crate::client::Options;
 
 /// Shorthand type for the function to be passed to the `add_dynamic_field` calls
 pub type DynamicFieldFunc = fn() -> Value;
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn test_builder_add() {
-        let mut builder = Builder::new(Default::default());
+        let mut builder = Builder::new(Options::default());
         let mut d: HashMap<String, Value> = HashMap::new();
         d.insert("key".to_string(), Value::String("value".to_string()));
         builder.add(d);
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_builder_add_conflict() {
-        let mut builder = Builder::new(Default::default());
+        let mut builder = Builder::new(Options::default());
         let mut data1: HashMap<String, Value> = HashMap::new();
         data1.insert("key".to_string(), Value::String("value".to_string()));
         builder.add(data1);

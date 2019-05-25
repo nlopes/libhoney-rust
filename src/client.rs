@@ -1,5 +1,4 @@
-/*! `Client` is the interface to create new builders, events and send the latter somewhere
- * using `Transmission`.
+/*! Client is the interface to create new builders, events and send the latter somewhere using `Transmission`.
 
 */
 use std::collections::HashMap;
@@ -145,10 +144,14 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transmission;
 
     #[test]
     fn test_client() {
-        let client = Client::new(Default::default(), Transmission::new(Default::default()));
+        let client = Client::new(
+            Options::default(),
+            Transmission::new(transmission::Options::default()),
+        );
         client.close();
     }
 }
