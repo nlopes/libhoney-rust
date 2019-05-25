@@ -35,7 +35,13 @@ impl EventsResponse for Events {
         clock: Instant,
         error: Option<String>,
     ) -> Vec<Response> {
-        let spent = Duration::from_secs(clock.elapsed().as_secs() / self.len() as u64);
+        let total_events = if self.is_empty() {
+            1
+        } else {
+            self.len() as u64
+        };
+
+        let spent = Duration::from_secs(clock.elapsed().as_secs() / total_events);
         self.iter()
             .map(|ev| Response {
                 status_code: status,
@@ -266,18 +272,22 @@ impl Transmission {
         {
             Ok(mut res) => match res.status() {
                 StatusCode::OK => {
-                    let mut honey_responses: Vec<HoneyResponse>;
+                    let mut responses: Vec<HoneyResponse>;
                     match res.json() {
-                        Ok(r) => honey_responses = r,
+                        Ok(r) => responses = r,
                         Err(e) => {
                             return events.to_response(None, None, clock, Some(e.to_string()));
                         }
                     }
-                    let spent = Duration::from_secs(
-                        clock.elapsed().as_secs() / (honey_responses.len() as u64),
-                    );
+                    let total_responses = if responses.is_empty() {
+                        1
+                    } else {
+                        responses.len() as u64
+                    };
 
-                    honey_responses
+                    let spent = Duration::from_secs(clock.elapsed().as_secs() / total_responses);
+
+                    responses
                         .iter()
                         .zip(events.iter())
                         .map(|(hr, e)| Response {

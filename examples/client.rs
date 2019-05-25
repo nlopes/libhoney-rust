@@ -1,8 +1,7 @@
+use env_logger;
+
 use libhoney;
 use libhoney::FieldHolder;
-
-#[macro_use]
-use env_logger;
 
 fn main() {
     env_logger::init();
