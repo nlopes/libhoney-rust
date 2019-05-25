@@ -12,9 +12,10 @@ use crate::fields::FieldHolder;
 #[derive(Debug, Clone)]
 pub struct Event {
     pub(crate) options: client::Options,
-    pub(crate) timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     pub(crate) fields: HashMap<String, Value>,
     pub(crate) metadata: Option<Value>,
+    sent: bool,
 }
 
 impl FieldHolder for Event {
@@ -31,6 +32,7 @@ impl Event {
             timestamp: Utc::now(),
             fields: HashMap::new(),
             metadata: None,
+            sent: false,
         }
     }
 
@@ -48,10 +50,35 @@ impl Event {
     ///
     /// Once you send an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send(&self, client: &mut client::Client) {
+    pub fn send(&mut self, client: &mut client::Client) {
+        // TODO(nlopes): should return a Result instead of finding we couldn't send
+        // through responses()
+        if self.fields.is_empty() {
+            return;
+        }
+
+        if self.options.api_host == "" {
+            // TODO(nlopes): Should return "No APIHost for Honeycomb. Can't send to the
+            // Great Unknown."
+            return;
+        }
+
+        if self.options.api_key == "" {
+            // TODO(nlopes): Should return "No api_key specified. Can't send event."
+            return;
+        }
+
+        if self.options.dataset == "" {
+            // TODO(nlopes): Should return "No Dataset for Honeycomb. Can't send
+            // datasetless."
+            return;
+        }
+
         if self.should_drop() {
             return;
         }
+
+        self.sent = true;
         client.transmission.send(self.clone());
     }
 
@@ -71,6 +98,7 @@ impl Event {
             timestamp: Utc::now(),
             fields: h,
             metadata: None,
+            sent: false,
         }
     }
 }
@@ -130,5 +158,41 @@ mod tests {
         if let Some(only) = client.transmission.responses().iter().next() {
             assert_eq!(only.status_code, Some(StatusCode::OK));
         }
+    }
+
+    #[test]
+    fn test_empty() {
+        use crate::transmission;
+
+        let api_host = &mockito::server_url();
+        let _m = mockito::mock(
+            "POST",
+            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("[{ \"status\": 200 }]")
+        .create();
+
+        let mut client = client::Client::new(
+            client::Options {
+                api_host: api_host.to_string(),
+                ..client::Options::default()
+            },
+            transmission::Transmission::new(transmission::Options {
+                max_batch_size: 1,
+                ..transmission::Options::default()
+            }),
+        );
+
+        let e = client.new_event();
+        e.send(&mut client);
+
+        // This will panic because we haven't sent the event due to lack of fields
+        client
+            .transmission
+            .responses()
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .err();
     }
 }

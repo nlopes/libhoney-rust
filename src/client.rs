@@ -182,6 +182,7 @@ mod tests {
         );
 
         let mut event = client.new_event();
+        event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
         event.send(&mut client);
 
@@ -192,9 +193,44 @@ mod tests {
         client.flush();
 
         event = client.new_event();
+        event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
         event.send(&mut client);
 
+        let response = client.responses().iter().next().unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+
+        client.close();
+    }
+
+    #[test]
+    fn test_send_without_api_key() {
+        use reqwest::StatusCode;
+        use serde_json::json;
+
+        let api_host = &mockito::server_url();
+        let _m = mockito::mock(
+            "POST",
+            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("[{ \"status\": 202 }]")
+        .create();
+
+        let mut client = Client::new(
+            Options {
+                api_host: api_host.to_string(),
+                ..Options::default()
+            },
+            Transmission::new(transmission::Options::default()),
+        );
+
+        let mut event = client.new_event();
+        event.add_field("some_field", Value::String("some_value".to_string()));
+        event.metadata = Some(json!("some metadata in a string"));
+        event.send(&mut client);
         let response = client.responses().iter().next().unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
