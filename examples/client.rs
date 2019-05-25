@@ -1,7 +1,12 @@
 use libhoney;
 use libhoney::FieldHolder;
 
+#[macro_use]
+use env_logger;
+
 fn main() {
+    env_logger::init();
+
     let mut client = libhoney::init(libhoney::Config {
         options: libhoney::client::Options {
             api_key: std::env::var("HONEYCOMB_API_KEY").unwrap(),
@@ -14,6 +19,7 @@ fn main() {
     event.add_field("extra", libhoney::Value::String("wheeee".to_string()));
     event.add_field("extra_ham", libhoney::Value::String("cheese".to_string()));
     event.send(&mut client);
-    let response = client.responses().iter().next();
-    println!("sent event, got back responses: {:#?}", response);
+    let response = client.responses().iter().next().unwrap();
+    assert_eq!(response.error, None);
+    client.close();
 }

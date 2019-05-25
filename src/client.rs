@@ -110,6 +110,7 @@ impl Client {
     /// close waits for all in-flight messages to be sent. You should call close() before
     /// app termination.
     pub fn close(mut self) {
+        info!("closing libhoney client");
         self.transmission.stop();
     }
 
@@ -119,8 +120,10 @@ impl Client {
     /// Flush if asynchronous sends are not guaranteed to run (i.e. running in AWS Lambda)
     /// Flush is not thread safe - use it only when you are sure that no other parts of
     /// your program are calling Send
-    pub fn flush(self) {
-        unimplemented!()
+    pub fn flush(&mut self) {
+        info!("flushing libhoney client");
+        self.transmission.stop();
+        self.transmission.start();
     }
 
     /// new_builder creates a new event builder. The builder inherits any Dynamic or
@@ -147,11 +150,55 @@ mod tests {
     use crate::transmission;
 
     #[test]
-    fn test_client() {
+    fn test_init() {
         let client = Client::new(
             Options::default(),
             Transmission::new(transmission::Options::default()),
         );
+        client.close();
+    }
+
+    #[test]
+    fn test_flush() {
+        use reqwest::StatusCode;
+        use serde_json::json;
+
+        let api_host = &mockito::server_url();
+        let _m = mockito::mock(
+            "POST",
+            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("[{ \"status\": 202 }]")
+        .create();
+
+        let mut client = Client::new(
+            Options {
+                api_host: api_host.to_string(),
+                ..Options::default()
+            },
+            Transmission::new(transmission::Options::default()),
+        );
+
+        let mut event = client.new_event();
+        event.metadata = Some(json!("some metadata in a string"));
+        event.send(&mut client);
+
+        let response = client.responses().iter().next().unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+
+        client.flush();
+
+        event = client.new_event();
+        event.metadata = Some(json!("some metadata in a string"));
+        event.send(&mut client);
+
+        let response = client.responses().iter().next().unwrap();
+        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+
         client.close();
     }
 }

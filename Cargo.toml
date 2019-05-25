@@ -32,4 +32,5 @@ tokio = "0.1"
 tokio-timer = "0.2"
 
 [dev-dependencies]
+env_logger = "0.6"
 mockito = "0.17"
