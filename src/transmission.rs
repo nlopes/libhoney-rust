@@ -233,8 +233,6 @@ impl Transmission {
         Ok(()).into_future()
     }
 
-    // TODO(nlopes): check timestamps (both setting up and updating them). Also make sure
-    // we're measuring both queue times and total times
     fn send_batch(
         events: Events,
         options: Options,
