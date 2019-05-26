@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn test_send_without_api_key() {
-        use std::time::Duration;
         use serde_json::json;
+        use std::time::Duration;
 
         let api_host = &mockito::server_url();
         let _m = mockito::mock(
