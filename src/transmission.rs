@@ -1,7 +1,7 @@
 /*! Transmission handles the transmission of events to Honeycomb
 
 */
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
@@ -117,8 +117,6 @@ pub struct Transmission {
     work_receiver: Receiver<Event>,
     response_sender: Sender<Response>,
     response_receiver: Receiver<Response>,
-
-    responses: Arc<Mutex<Vec<Response>>>,
 }
 
 impl Drop for Transmission {
@@ -157,7 +155,6 @@ impl Transmission {
             work_receiver,
             response_sender,
             response_receiver,
-            responses: Arc::new(Mutex::new(Vec::new())),
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
         }
     }
@@ -182,7 +179,7 @@ impl Transmission {
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
         let mut runtime = Self::new_runtime(Some(&options));
-        let mut batch: Events = Vec::with_capacity(options.max_batch_size);
+        let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
 
         loop {
@@ -194,7 +191,15 @@ impl Transmission {
                         info!("got 'internal_stop_event' event");
                         break;
                     }
-                    batch.push(event);
+                    let key = format!(
+                        "{}_{}_{}",
+                        event.options.api_host, event.options.api_key, event.options.dataset
+                    );
+                    batches.entry(key).and_modify(|v| v.push(event.clone())).or_insert({
+                        let mut v = Vec::with_capacity(options.max_batch_size);
+                        v.push(event);
+                        v
+                    });
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     expired = true;
@@ -205,22 +210,31 @@ impl Transmission {
                 }
             };
 
-            if batch.len() >= options.max_batch_size || expired {
-                let batch_copy = batch.clone();
-                let batch_response_sender = response_sender.clone();
-                let batch_user_agent = user_agent.to_string();
+            for (_, mut batch) in batches.clone() {
+                let options = options.clone();
 
-                runtime.spawn(lazy(move || {
-                    for response in
-                        Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
-                    {
-                        batch_response_sender
-                            .send(response)
-                            .expect("unable to enqueue batch response");
-                    }
-                    Ok(()).into_future()
-                }));
-                batch.clear();
+                if batch.len() >= options.max_batch_size || expired {
+                    let batch_copy = batch.clone();
+                    let batch_response_sender = response_sender.clone();
+                    let batch_user_agent = user_agent.to_string();
+
+                    runtime.spawn(lazy(move || {
+                        for response in
+                            Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
+                        {
+                            batch_response_sender
+                                .send(response)
+                                .expect("unable to enqueue batch response");
+                        }
+                        Ok(()).into_future()
+                    }));
+                    batch.clear();
+                }
+            }
+
+            // If we get here and we were expired, then we've already triggered a send, so
+            // we reset this to ensure it kicks off again
+            if expired {
                 expired = false;
             }
         }
@@ -456,20 +470,92 @@ mod tests {
         )
         .create();
 
+        let metadata = Some(json!("some metadata in a string"));
         let mut event = Event::new(&client::Options {
             api_key: "some_api_key".to_string(),
             api_host: api_host.to_string(),
             ..client::Options::default()
         });
-        event.metadata = Some(json!("some metadata in a string"));
+        event.metadata = metadata.clone();
         transmission.send(event);
 
         if let Some(response) = transmission.responses().iter().next() {
             assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
-            assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+            assert_eq!(response.metadata, metadata);
         } else {
             panic!("did not receive an expected response");
         }
+        transmission.stop();
+    }
+
+    #[test]
+    fn test_multiple_batches() {
+        // What we try to test here is if events are sent in separate batches, depending
+        // on their combination of api_host, api_key, dataset.
+        //
+        // For that, we set max_batch_size to 2, then we send 3 events, 2 with one
+        // combination and 1 with another.  Only the two should be sent, and we should get
+        // back two responses.
+        use serde_json::json;
+        let mut transmission = Transmission::new(Options {
+            max_batch_size: 2,
+            batch_timeout: Duration::from_secs(5),
+            ..Options::default()
+        });
+        transmission.start();
+
+        let api_host = &mockito::server_url();
+        let _m = mockito::mock(
+            "POST",
+            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"
+[
+  { "status":202 },
+  { "status":202 }
+]"#,
+        )
+        .create();
+
+        let mut event1 = Event::new(&client::Options {
+            api_key: "some_api_key".to_string(),
+            api_host: api_host.to_string(),
+            dataset: "same".to_string(),
+            ..client::Options::default()
+        });
+        event1.metadata = Some(json!("event1"));
+        let mut event2 = event1.clone();
+        event2.metadata = Some(json!("event2"));
+        let mut event3 = event1.clone();
+        event3.options.dataset = "other".to_string();
+        event3.metadata = Some(json!("event3"));
+
+        transmission.send(event3);
+        transmission.send(event2);
+        transmission.send(event1);
+
+        let response1 = transmission.responses().iter().next().unwrap();
+        let response2 = transmission.responses().iter().next().unwrap();
+        let _ = transmission
+            .responses()
+            .recv_timeout(Duration::from_millis(250))
+            .err();
+
+        assert_eq!(response1.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response2.status_code, Some(StatusCode::ACCEPTED));
+
+        // Responses can come out of order so we check against any of the metadata
+        assert!(
+            response1.metadata == Some(json!("event1"))
+                || response1.metadata == Some(json!("event2"))
+        );
+        assert!(
+            response2.metadata == Some(json!("event1"))
+                || response2.metadata == Some(json!("event2"))
+        );
         transmission.stop();
     }
 
