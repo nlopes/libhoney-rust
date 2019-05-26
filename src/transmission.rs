@@ -195,11 +195,14 @@ impl Transmission {
                         "{}_{}_{}",
                         event.options.api_host, event.options.api_key, event.options.dataset
                     );
-                    batches.entry(key).and_modify(|v| v.push(event.clone())).or_insert({
-                        let mut v = Vec::with_capacity(options.max_batch_size);
-                        v.push(event);
-                        v
-                    });
+                    batches
+                        .entry(key)
+                        .and_modify(|v| v.push(event.clone()))
+                        .or_insert({
+                            let mut v = Vec::with_capacity(options.max_batch_size);
+                            v.push(event);
+                            v
+                        });
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     expired = true;
