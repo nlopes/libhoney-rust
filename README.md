@@ -13,17 +13,11 @@ Rust library for sending data to Honeycomb.
 But I'd be forever greatful if you can try it out and provide feedback. There are a few
 reasons why I think this is not yet for prime time (aka: production):
 
-- I'm not happy with the interfaces for the library - althought they are closer to idiomatic rust than the instructions (Honeycomb SDK spec - singleton pattern) I don't think they're quite there yet. That means I'll probably make breaking changes to this, which will cause you pain if you use it straight away. I didn't use the singleton pattern, meaning you have to init and then use the client for the operations (you control the client, not the library).
+- Honeycomb uses the singleton pattern for the libraries but I decided not to use it here (mostly due to: harder to get right, it feels to me like a rust anti-pattern). If you think I should have, please let me know.
 
-- I'm not convinced of the threading code, and how I return responses. Although "it works" it probably isn't what you'd want from a mature library.
+- I'm not convinced of the threading code. Although "it works" it probably isn't great - any feedback would be greatly appreciated.
 
-- I have mostly copied the docs from Honeycomb, so there will be a few places where they don't quite match the content, which also means that you'll have a hard time following the docs (sorry!).
-
-- I tried to get to a workable state quickly and so I (ab)used .unwrap() a lot - that's bad in a library as it will panic your client.
-
-- I've set Metadata as a "serialisable json value" (serde_json::Value) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
-
-- I don't allow a custom logger yet
+- I've set Metadata as a "serialisable json value" (`serde_json::Value`) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
 
 For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
 [semantic versioning][semantic versioning]). Having said that, if you still want to use
@@ -48,12 +42,12 @@ will terminate all background threads.
 
 ```rust
 let client = libhoney::init(libhoney::Config{
-  options: libhoney::ClientOptions {
+  options: libhoney::client::Options {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
-    ..Default::default()
+    ..libhoney::client::Options::default()
   },
-  transmission_options: Default::default(),
+  transmission_options: libhoney::transmission::Options::default(),
 });
 
 client.close();
@@ -74,8 +68,9 @@ Upon calling .send(), the event is dispatched to be sent to Honeycomb. All libra
 defaults that will allow your application to function as smoothly as possible during error
 conditions.
 
-In its simplest form, you can add a single attribute to an event with the .add_field(k, v)
-method. If you add the same key multiple times, only the last value added will be kept.
+In its simplest form, you can add a single attribute to an event with the `.add_field(k,
+v)` method. If you add the same key multiple times, only the last value added will be
+kept.
 
 More complex structures (maps and structs—things that can be serialized into a JSON
 object) can be added to an event with the .add(data) method.
@@ -99,15 +94,15 @@ populating the .metadata attribute directly on an event.
 
 Responses have a number of fields describing the result of an attempted event send:
 
-- metadata: the metadata you attached to the event to which this response corresponds
+- `metadata`: the metadata you attached to the event to which this response corresponds
 
-- status_code: the HTTP status code returned by Honeycomb when trying to send the event. 2xx indicates success.
+- `status_code`: the HTTP status code returned by Honeycomb when trying to send the event. 2xx indicates success.
 
-- duration: the time.Duration it took to send the event.
+- `duration`: the time.Duration it took to send the event.
 
-- body: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
+- `body`: the body of the HTTP response from Honeycomb. On failures, this body contains some more information about the failure.
 
-- error: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
+- `error`: when the event doesn’t even get to create a HTTP attempt, the reason will be in this field. (e.g. when sampled or dropped because of a queue overflow).
 
 You don’t have to process responses if you’re not interested in them—simply ignoring them
 is perfectly safe. Unread responses will be dropped.
@@ -125,7 +120,7 @@ use libhoney::FieldHolder; // Add trait to allow for adding fields
 // Call init to get a client
 let mut client = init(libhoney::Config {
   options: options,
-  transmission_options: Default::default(),
+  transmission_options: libhoney::transmission::Options::default(),
 });
 
 let mut data: HashMap<String, Value> = HashMap::new();

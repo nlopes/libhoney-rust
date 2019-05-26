@@ -5,17 +5,11 @@
 But I'd be forever greatful if you can try it out and provide feedback. There are a few
 reasons why I think this is not yet for prime time (aka: production):
 
-- I'm not happy with the interfaces for the library - althought they are closer to idiomatic rust than the instructions (Honeycomb SDK spec - singleton pattern) I don't think they're quite there yet. That means I'll probably make breaking changes to this, which will cause you pain if you use it straight away. I didn't use the singleton pattern, meaning you have to init and then use the client for the operations (you control the client, not the library).
+- Honeycomb uses the singleton pattern for the libraries but I decided not to use it here (mostly due to: harder to get right, it feels to me like a rust anti-pattern). If you think I should have, please let me know.
 
-- I'm not convinced of the threading code, and how I return responses. Although "it works" it probably isn't what you'd want from a mature library.
-
-- I have mostly copied the docs from Honeycomb, so there will be a few places where they don't quite match the content, which also means that you'll have a hard time following the docs (sorry!).
-
-- I tried to get to a workable state quickly and so I (ab)used .unwrap() a lot - that's bad in a library as it will panic your client.
+- I'm not convinced of the threading code. Although "it works" it probably isn't great - any feedback would be greatly appreciated.
 
 - I've set Metadata as a "serialisable json value" (`serde_json::Value`) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
-
-- I don't allow a custom logger yet
 
 For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
 [semantic versioning][semantic versioning]). Having said that, if you still want to use
