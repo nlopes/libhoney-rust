@@ -175,6 +175,7 @@ mod tests {
 
         let mut client = Client::new(
             Options {
+                api_key: "some api key".to_string(),
                 api_host: api_host.to_string(),
                 ..Options::default()
             },
@@ -206,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_send_without_api_key() {
-        use reqwest::StatusCode;
+        use std::time::Duration;
         use serde_json::json;
 
         let api_host = &mockito::server_url();
@@ -231,10 +232,10 @@ mod tests {
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
         event.send(&mut client);
-        let response = client.responses().iter().next().unwrap();
-        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
-        assert_eq!(response.metadata, Some(json!("some metadata in a string")));
-
+        client
+            .responses()
+            .recv_timeout(Duration::from_millis(100))
+            .err();
         client.close();
     }
 }

@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::client;
 use crate::fields::FieldHolder;
 
+/// `Metadata` is a type alias for an optional json serialisable value
 pub type Metadata = Option<Value>;
 
 /// `Event` is used to hold data that can be sent to Honeycomb. It can also specify
@@ -156,6 +157,7 @@ mod tests {
         .create();
 
         let options = client::Options {
+            api_key: "some api key".to_string(),
             api_host: api_host.to_string(),
             ..client::Options::default()
         };
@@ -193,6 +195,7 @@ mod tests {
 
         let mut client = client::Client::new(
             client::Options {
+                api_key: "some api key".to_string(),
                 api_host: api_host.to_string(),
                 ..client::Options::default()
             },
@@ -202,10 +205,9 @@ mod tests {
             }),
         );
 
-        let e = client.new_event();
+        let mut e = client.new_event();
         e.send(&mut client);
 
-        // This will panic because we haven't sent the event due to lack of fields
         client
             .transmission
             .responses()
