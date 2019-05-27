@@ -120,7 +120,7 @@ you.
 # .with_body("finished batch to honeycomb")
 # .create();
 
-# let options = libhoney::client::Options{api_host: api_host.to_string(), ..libhoney::client::Options::default()};
+# let options = libhoney::client::Options{api_host: api_host.to_string(), api_key: "some key".to_string(), ..libhoney::client::Options::default()};
 use libhoney::FieldHolder; // Add trait to allow for adding fields
 // Call init to get a client
 let mut client = init(libhoney::Config {
@@ -136,7 +136,8 @@ data.insert("payload_length".to_string(), json!(27));
 
 let mut ev = client.new_event();
 ev.add(data);
-ev.send(&mut client);
+ // In production code, please check return of `.send()`
+ev.send(&mut client).err();
 ```
 
 [API reference]: https://docs.rs/libhoney-rust
@@ -147,6 +148,7 @@ ev.send(&mut client);
 
 mod builder;
 pub mod client;
+mod errors;
 mod event;
 mod eventdata;
 mod fields;
@@ -155,6 +157,7 @@ pub mod transmission;
 
 pub use builder::{Builder, DynamicFieldFunc};
 pub use client::Client;
+pub use errors::{Error, ErrorKind, Result};
 pub use event::{Event, Metadata};
 pub use fields::FieldHolder;
 pub use serde_json::{json, Value};
@@ -181,7 +184,8 @@ pub struct Config {
 /// options (`client::Options` and `transmission::Options`).
 #[inline]
 pub fn init(config: Config) -> Client {
-    let transmission = Transmission::new(config.transmission_options);
+    let transmission =
+        Transmission::new(config.transmission_options).expect("failed to instantiate transmission");
     Client::new(config.options, transmission)
 }
 
@@ -196,6 +200,6 @@ mod tests {
             transmission_options: transmission::Options::default(),
         });
         assert_eq!(client.options.dataset, "librust-dataset");
-        client.close();
+        client.close().unwrap();
     }
 }

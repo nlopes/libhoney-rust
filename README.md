@@ -131,7 +131,8 @@ data.insert("payload_length".to_string(), json!(27));
 
 let mut ev = client.new_event();
 ev.add(data);
-ev.send(&mut client);
+ // In production code, please check return of `.send()`
+ev.send(&mut client).err();
 ```
 
 [API reference]: https://docs.rs/libhoney-rust

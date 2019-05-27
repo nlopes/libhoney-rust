@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use chrono::prelude::{DateTime, Utc};
+use log::info;
 use rand::Rng;
 use serde_json::Value;
 
 use crate::client;
+use crate::errors::{Error, Result};
 use crate::fields::FieldHolder;
 
 /// `Metadata` is a type alias for an optional json serialisable value
@@ -22,8 +24,30 @@ pub struct Event {
 }
 
 impl FieldHolder for Event {
-    fn get_fields(&mut self) -> &mut HashMap<String, Value> {
-        &mut self.fields
+    fn add(&mut self, data: HashMap<String, Value>) {
+        if !self.sent {
+            self.fields.extend(data);
+        }
+    }
+
+    /// add_field adds a field to the current (event/builder) fields
+    fn add_field(&mut self, name: &str, value: Value) {
+        if !self.sent {
+            self.fields.insert(name.to_string(), value);
+        }
+    }
+
+    /// add_func iterates over the results from func (until Err) and adds the results to
+    /// the event/builder fields
+    fn add_func<F>(&mut self, func: F)
+    where
+        F: Fn() -> Result<(String, Value)>,
+    {
+        if !self.sent {
+            while let Ok((name, value)) = func() {
+                self.add_field(&name, value);
+            }
+        }
     }
 }
 
@@ -53,36 +77,48 @@ impl Event {
     ///
     /// Once you send an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send(&mut self, client: &mut client::Client) {
-        // TODO(nlopes): should return a Result instead of finding we couldn't send
-        // through responses()
+    pub fn send(&mut self, client: &mut client::Client) -> Result<()> {
+        if self.should_drop() {
+            info!("dropping event due to sampling");
+            return Ok(());
+        }
+        self.send_presampled(client)
+    }
+
+    /// `send_presampled` dispatches the event to be sent to Honeycomb.
+    ///
+    /// Sampling is assumed to have already happened. `send_presampled` will dispatch
+    /// every event handed to it, and pass along the sample rate. Use this instead of
+    /// `send()` when the calling function handles the logic around which events to drop
+    /// when sampling.
+    ///
+    /// `send_presampled` inherits the values of required fields from `Config`. If any
+    /// required fields are specified in neither `Config` nor the `Event`, `send` will
+    /// return an error.  Required fields are `api_host`, `api_key`, and `dataset`. Values
+    /// specified in an `Event` override `Config`.
+    ///
+    /// Once you `send` an event, any addition calls to add data to that event will return
+    /// without doing anything. Once the event is sent, it becomes immutable.
+    pub fn send_presampled(&mut self, client: &mut client::Client) -> Result<()> {
         if self.fields.is_empty() {
-            return;
+            return Err(Error::missing_event_fields());
         }
 
         if self.options.api_host == "" {
-            // TODO(nlopes): Should return "No APIHost for Honeycomb. Can't send to the
-            // Great Unknown."
-            return;
+            return Err(Error::missing_option("api_host", "can't send to Honeycomb"));
         }
 
         if self.options.api_key == "" {
-            // TODO(nlopes): Should return "No api_key specified. Can't send event."
-            return;
+            return Err(Error::missing_option("api_key", "can't send to Honeycomb"));
         }
 
         if self.options.dataset == "" {
-            // TODO(nlopes): Should return "No Dataset for Honeycomb. Can't send
-            // datasetless."
-            return;
-        }
-
-        if self.should_drop() {
-            return;
+            return Err(Error::missing_option("dataset", "can't send to Honeycomb"));
         }
 
         self.sent = true;
         client.transmission.send(self.clone());
+        Ok(())
     }
 
     /// Set timestamp on the event
@@ -167,20 +203,23 @@ mod tests {
             transmission::Transmission::new(transmission::Options {
                 max_batch_size: 1,
                 ..transmission::Options::default()
-            }),
+            })
+            .unwrap(),
         );
 
         let mut e = Event::new(&options);
         e.add_field("field_name", Value::String("field_value".to_string()));
-        e.send(&mut client);
+        e.send(&mut client).unwrap();
 
         if let Some(only) = client.transmission.responses().iter().next() {
             assert_eq!(only.status_code, Some(StatusCode::OK));
         }
+        client.close().unwrap();
     }
 
     #[test]
     fn test_empty() {
+        use crate::errors::ErrorKind;
         use crate::transmission;
 
         let api_host = &mockito::server_url();
@@ -202,16 +241,15 @@ mod tests {
             transmission::Transmission::new(transmission::Options {
                 max_batch_size: 1,
                 ..transmission::Options::default()
-            }),
+            })
+            .unwrap(),
         );
 
         let mut e = client.new_event();
-        e.send(&mut client);
-
-        client
-            .transmission
-            .responses()
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .err();
+        assert_eq!(
+            e.send(&mut client).err().unwrap().kind,
+            ErrorKind::MissingEventFields
+        );
+        client.close().unwrap();
     }
 }

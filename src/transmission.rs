@@ -11,6 +11,7 @@ use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 use tokio_timer::clock::Clock;
 
+use crate::errors::{Error, Result};
 use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::response::{HoneyResponse, Response};
@@ -121,34 +122,33 @@ pub struct Transmission {
 
 impl Drop for Transmission {
     fn drop(&mut self) {
-        self.stop()
+        self.stop().unwrap();
     }
 }
 
 impl Transmission {
-    fn new_runtime(options: Option<&Options>) -> Runtime {
+    fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
         let mut builder = Builder::new();
         if let Some(opts) = options {
             builder
                 .blocking_threads(opts.max_concurrent_batches)
                 .core_threads(opts.max_concurrent_batches);
         };
-        builder
+        Ok(builder
             .clock(Clock::system())
             .keep_alive(Some(Duration::from_secs(60)))
             .name_prefix("libhoney-rust")
             .stack_size(3 * 1024 * 1024)
-            .build()
-            .expect("unable to start runtime")
+            .build()?)
     }
 
-    pub(crate) fn new(options: Options) -> Self {
-        let runtime = Self::new_runtime(None);
+    pub(crate) fn new(options: Options) -> Result<Self> {
+        let runtime = Self::new_runtime(None)?;
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
-        Self {
+        Ok(Self {
             options,
             runtime,
             work_sender,
@@ -156,7 +156,7 @@ impl Transmission {
             response_sender,
             response_receiver,
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
-        }
+        })
     }
 
     pub(crate) fn start(&mut self) {
@@ -165,7 +165,7 @@ impl Transmission {
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
 
-        info!("Starting sender thread");
+        info!("transmission starting");
         // thread that processes all the work received
         self.runtime.spawn(lazy(|| {
             Self::process_work(work_receiver, response_sender, options, user_agent)
@@ -178,7 +178,7 @@ impl Transmission {
         options: Options,
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
-        let mut runtime = Self::new_runtime(Some(&options));
+        let mut runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
 
@@ -326,26 +326,47 @@ impl Transmission {
         }
     }
 
-    pub(crate) fn stop(&mut self) {
-        info!("Sending stop event");
-        self.work_sender
-            .send(Event::stop_event())
-            .expect("unable to send signal to stop runtime");
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        info!("transmission stopping");
+        if self.work_sender.is_full() {
+            error!("work sender is full");
+            return Err(Error::sender_full("work"));
+        }
+        Ok(self.work_sender.send(Event::stop_event())?)
     }
 
     pub(crate) fn send(&mut self, event: Event) {
+        let clock = Instant::now();
         if self.work_sender.is_full() {
-            // TODO(nlopes): this is clearly not enough
-            eprintln!("Sender is full");
             error!("work sender is full");
+            self.response_sender
+                .send(Response {
+                    status_code: None,
+                    body: None,
+                    duration: clock.elapsed(),
+                    metadata: event.metadata,
+                    error: Some("queue overflow".to_string()),
+                })
+                .unwrap_or_else(|e| {
+                    error!("response dropped, error: {}", e);
+                });
         } else {
             self.runtime.spawn(
                 self.work_sender
                     .clone()
-                    .send_timeout(event, DEFAULT_SEND_TIMEOUT)
+                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
                     .map_err(|e| {
-                        // TODO(nlopes): this is clearly not enough
-                        eprintln!("Error when adding: {:#?}", e);
+                        self.response_sender
+                            .send(Response {
+                                status_code: None,
+                                body: None,
+                                duration: clock.elapsed(),
+                                metadata: event.metadata,
+                                error: Some(e.to_string()),
+                            })
+                            .unwrap_or_else(|e| {
+                                error!("response dropped, error: {}", e);
+                            });
                     })
                     .into_future(),
             );
@@ -368,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_defaults() {
-        let transmission = Transmission::new(Options::default());
+        let transmission = Transmission::new(Options::default()).unwrap();
         assert_eq!(
             transmission.user_agent,
             format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION"))
@@ -391,7 +412,8 @@ mod tests {
         let transmission = Transmission::new(Options {
             user_agent_addition: Some(" something/0.3".to_string()),
             ..Options::default()
-        });
+        })
+        .unwrap();
         assert_eq!(
             transmission.options.user_agent_addition,
             Some(" something/0.3".to_string())
@@ -405,7 +427,8 @@ mod tests {
         let mut transmission = Transmission::new(Options {
             max_batch_size: 5,
             ..Options::default()
-        });
+        })
+        .unwrap();
         transmission.start();
 
         let api_host = &mockito::server_url();
@@ -444,7 +467,7 @@ mod tests {
             assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
             assert_eq!(response.body, None);
         }
-        transmission.stop();
+        transmission.stop().unwrap();
     }
 
     #[test]
@@ -454,7 +477,8 @@ mod tests {
         let mut transmission = Transmission::new(Options {
             max_batch_size: 1,
             ..Options::default()
-        });
+        })
+        .unwrap();
         transmission.start();
 
         let api_host = &mockito::server_url();
@@ -488,7 +512,7 @@ mod tests {
         } else {
             panic!("did not receive an expected response");
         }
-        transmission.stop();
+        transmission.stop().unwrap();
     }
 
     #[test]
@@ -504,7 +528,8 @@ mod tests {
             max_batch_size: 2,
             batch_timeout: Duration::from_secs(5),
             ..Options::default()
-        });
+        })
+        .unwrap();
         transmission.start();
 
         let api_host = &mockito::server_url();
@@ -559,14 +584,14 @@ mod tests {
             response2.metadata == Some(json!("event1"))
                 || response2.metadata == Some(json!("event2"))
         );
-        transmission.stop();
+        transmission.stop().unwrap();
     }
 
     #[test]
     fn test_bad_response() {
         use serde_json::json;
 
-        let mut transmission = Transmission::new(Options::default());
+        let mut transmission = Transmission::new(Options::default()).unwrap();
         transmission.start();
 
         let api_host = &mockito::server_url();
@@ -597,6 +622,6 @@ mod tests {
         } else {
             panic!("did not receive an expected response");
         }
-        transmission.stop();
+        transmission.stop().unwrap();
     }
 }

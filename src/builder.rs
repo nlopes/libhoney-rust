@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::client::Options;
+use crate::errors::Result;
 use crate::event::Event;
 use crate::fields::FieldHolder;
 
@@ -10,8 +11,24 @@ use crate::fields::FieldHolder;
 pub type DynamicFieldFunc = fn() -> Value;
 
 impl FieldHolder for Builder {
-    fn get_fields(&mut self) -> &mut HashMap<String, Value> {
-        &mut self.fields
+    fn add(&mut self, data: HashMap<String, Value>) {
+        self.fields.extend(data);
+    }
+
+    /// add_field adds a field to the current (event/builder) fields
+    fn add_field(&mut self, name: &str, value: Value) {
+        self.fields.insert(name.to_string(), value);
+    }
+
+    /// add_func iterates over the results from func (until Err) and adds the results to
+    /// the event/builder fields
+    fn add_func<F>(&mut self, func: F)
+    where
+        F: Fn() -> Result<(String, Value)>,
+    {
+        while let Ok((name, value)) = func() {
+            self.add_field(&name, value);
+        }
     }
 }
 

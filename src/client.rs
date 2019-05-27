@@ -7,6 +7,7 @@ use crossbeam_channel::Receiver;
 use log::info;
 use serde_json::Value;
 
+use crate::errors::Result;
 use crate::fields::FieldHolder;
 use crate::response::Response;
 use crate::Event;
@@ -109,9 +110,9 @@ impl Client {
 
     /// close waits for all in-flight messages to be sent. You should call close() before
     /// app termination.
-    pub fn close(mut self) {
+    pub fn close(mut self) -> Result<()> {
         info!("closing libhoney client");
-        self.transmission.stop();
+        self.transmission.stop()
     }
 
     /// flush closes and reopens the Transmission, ensuring events are sent without
@@ -120,10 +121,11 @@ impl Client {
     /// Flush if asynchronous sends are not guaranteed to run (i.e. running in AWS Lambda)
     /// Flush is not thread safe - use it only when you are sure that no other parts of
     /// your program are calling Send
-    pub fn flush(&mut self) {
+    pub fn flush(&mut self) -> Result<()> {
         info!("flushing libhoney client");
-        self.transmission.stop();
+        self.transmission.stop()?;
         self.transmission.start();
+        Ok(())
     }
 
     /// new_builder creates a new event builder. The builder inherits any Dynamic or
@@ -146,16 +148,16 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Client, FieldHolder, Options, Transmission, Value};
     use crate::transmission;
 
     #[test]
     fn test_init() {
         let client = Client::new(
             Options::default(),
-            Transmission::new(transmission::Options::default()),
+            Transmission::new(transmission::Options::default()).unwrap(),
         );
-        client.close();
+        client.close().unwrap();
     }
 
     #[test]
@@ -179,36 +181,37 @@ mod tests {
                 api_host: api_host.to_string(),
                 ..Options::default()
             },
-            Transmission::new(transmission::Options::default()),
+            Transmission::new(transmission::Options::default()).unwrap(),
         );
 
         let mut event = client.new_event();
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
-        event.send(&mut client);
+        event.send(&mut client).unwrap();
 
         let response = client.responses().iter().next().unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
-        client.flush();
+        client.flush().unwrap();
 
         event = client.new_event();
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
-        event.send(&mut client);
+        event.send(&mut client).unwrap();
 
         let response = client.responses().iter().next().unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
-        client.close();
+        client.close().unwrap();
     }
 
     #[test]
     fn test_send_without_api_key() {
         use serde_json::json;
-        use std::time::Duration;
+
+        use crate::errors::ErrorKind;
 
         let api_host = &mockito::server_url();
         let _m = mockito::mock(
@@ -225,17 +228,19 @@ mod tests {
                 api_host: api_host.to_string(),
                 ..Options::default()
             },
-            Transmission::new(transmission::Options::default()),
+            Transmission::new(transmission::Options::default()).unwrap(),
         );
 
         let mut event = client.new_event();
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
-        event.send(&mut client);
-        client
-            .responses()
-            .recv_timeout(Duration::from_millis(100))
-            .err();
-        client.close();
+        let err = event.send(&mut client).err().unwrap();
+
+        assert_eq!(err.kind, ErrorKind::MissingOption);
+        assert_eq!(
+            err.message,
+            "missing option 'api_key', can't send to Honeycomb"
+        );
+        client.close().unwrap();
     }
 }
