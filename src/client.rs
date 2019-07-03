@@ -10,8 +10,8 @@ use serde_json::Value;
 use crate::errors::Result;
 use crate::fields::FieldHolder;
 use crate::response::Response;
+use crate::sender::Sender;
 use crate::Event;
-use crate::Transmission;
 use crate::{Builder, DynamicFieldFunc};
 
 const DEFAULT_API_HOST: &str = "https://api.honeycomb.io";
@@ -59,20 +59,24 @@ impl Default for Options {
 /// Client represents an object that can create new builders and events and send them
 /// somewhere.
 #[derive(Debug)]
-pub struct Client {
+pub struct Client<T: Sender> {
     pub(crate) options: Options,
-    pub(crate) transmission: Transmission,
+    /// transmission mechanism for the client
+    pub transmission: T,
 
     builder: Builder,
 }
 
-impl Client {
+impl<T> Client<T>
+where
+    T: Sender,
+{
     /// new creates a new Client with the provided Options and initialised
     /// Transmission.
     ///
     /// Once populated, it auto starts the transmission background threads and is ready to
     /// send events.
-    pub fn new(options: Options, transmission: Transmission) -> Self {
+    pub fn new(options: Options, transmission: T) -> Self {
         info!("Creating honey client");
 
         let mut c = Self {
@@ -148,8 +152,8 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{Client, FieldHolder, Options, Transmission, Value};
-    use crate::transmission;
+    use super::{Client, FieldHolder, Options, Value};
+    use crate::transmission::{self, Transmission};
 
     #[test]
     fn test_init() {

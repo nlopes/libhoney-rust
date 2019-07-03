@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::client;
 use crate::errors::{Error, Result};
 use crate::fields::FieldHolder;
+use crate::sender::Sender;
 
 /// `Metadata` is a type alias for an optional json serialisable value
 pub type Metadata = Option<Value>;
@@ -77,7 +78,7 @@ impl Event {
     ///
     /// Once you send an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send(&mut self, client: &mut client::Client) -> Result<()> {
+    pub fn send<T: Sender>(&mut self, client: &mut client::Client<T>) -> Result<()> {
         if self.should_drop() {
             info!("dropping event due to sampling");
             return Ok(());
@@ -99,7 +100,7 @@ impl Event {
     ///
     /// Once you `send` an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send_presampled(&mut self, client: &mut client::Client) -> Result<()> {
+    pub fn send_presampled<T: Sender>(&mut self, client: &mut client::Client<T>) -> Result<()> {
         if self.fields.is_empty() {
             return Err(Error::missing_event_fields());
         }

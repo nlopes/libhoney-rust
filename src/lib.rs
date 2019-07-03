@@ -152,7 +152,9 @@ mod errors;
 mod event;
 mod eventdata;
 mod fields;
+pub mod mock;
 mod response;
+mod sender;
 pub mod transmission;
 
 pub use builder::{Builder, DynamicFieldFunc};
@@ -160,12 +162,13 @@ pub use client::Client;
 pub use errors::{Error, ErrorKind, Result};
 pub use event::{Event, Metadata};
 pub use fields::FieldHolder;
+pub use sender::Sender;
 pub use serde_json::{json, Value};
 use transmission::Transmission;
 
 /// Config allows the user to customise the initialisation of the library (effectively the
 /// Client)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[must_use = "must be set up for client to be properly initialised"]
 pub struct Config {
     /// options is a subset of the global libhoney config that focuses on the
@@ -183,10 +186,21 @@ pub struct Config {
 /// init is called on app initialisation and passed a `Config`. A `Config` has two sets of
 /// options (`client::Options` and `transmission::Options`).
 #[inline]
-pub fn init(config: Config) -> Client {
+pub fn init(config: Config) -> Client<Transmission> {
     let transmission =
         Transmission::new(config.transmission_options).expect("failed to instantiate transmission");
     Client::new(config.options, transmission)
+}
+
+/// Auxiliary test module
+pub mod test {
+    use crate::mock;
+    /// `init` is purely used for testing purposes
+    pub fn init(config: super::Config) -> super::Client<mock::TransmissionMock> {
+        let transmission = mock::TransmissionMock::new(config.transmission_options)
+            .expect("failed to instantiate transmission");
+        super::Client::new(config.options, transmission)
+    }
 }
 
 #[cfg(test)]

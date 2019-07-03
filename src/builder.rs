@@ -36,7 +36,8 @@ impl FieldHolder for Builder {
 /// override settings.
 #[derive(Debug, Clone)]
 pub struct Builder {
-    options: Options,
+    /// Client Options
+    pub options: Options,
     pub(crate) fields: HashMap<String, Value>,
     dynamic_fields: Vec<(String, DynamicFieldFunc)>,
 }

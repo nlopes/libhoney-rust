@@ -15,6 +15,7 @@ use crate::errors::{Error, Result};
 use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::response::{HoneyResponse, Response};
+use crate::sender::Sender as TransmissionSender;
 
 type Events = Vec<Event>;
 
@@ -126,6 +127,73 @@ impl Drop for Transmission {
     }
 }
 
+impl TransmissionSender for Transmission {
+    fn start(&mut self) {
+        let work_receiver = self.work_receiver.clone();
+        let response_sender = self.response_sender.clone();
+        let options = self.options.clone();
+        let user_agent = self.user_agent.clone();
+
+        info!("transmission starting");
+        // thread that processes all the work received
+        self.runtime.spawn(lazy(|| {
+            Self::process_work(work_receiver, response_sender, options, user_agent)
+        }));
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        info!("transmission stopping");
+        if self.work_sender.is_full() {
+            error!("work sender is full");
+            return Err(Error::sender_full("work"));
+        }
+        Ok(self.work_sender.send(Event::stop_event())?)
+    }
+
+    fn send(&mut self, event: Event) {
+        let clock = Instant::now();
+        if self.work_sender.is_full() {
+            error!("work sender is full");
+            self.response_sender
+                .send(Response {
+                    status_code: None,
+                    body: None,
+                    duration: clock.elapsed(),
+                    metadata: event.metadata,
+                    error: Some("queue overflow".to_string()),
+                })
+                .unwrap_or_else(|e| {
+                    error!("response dropped, error: {}", e);
+                });
+        } else {
+            self.runtime.spawn(
+                self.work_sender
+                    .clone()
+                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
+                    .map_err(|e| {
+                        self.response_sender
+                            .send(Response {
+                                status_code: None,
+                                body: None,
+                                duration: clock.elapsed(),
+                                metadata: event.metadata,
+                                error: Some(e.to_string()),
+                            })
+                            .unwrap_or_else(|e| {
+                                error!("response dropped, error: {}", e);
+                            });
+                    })
+                    .into_future(),
+            );
+        }
+    }
+
+    /// responses provides access to the receiver
+    fn responses(&self) -> Receiver<Response> {
+        self.response_receiver.clone()
+    }
+}
+
 impl Transmission {
     fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
         let mut builder = Builder::new();
@@ -157,19 +225,6 @@ impl Transmission {
             response_receiver,
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
         })
-    }
-
-    pub(crate) fn start(&mut self) {
-        let work_receiver = self.work_receiver.clone();
-        let response_sender = self.response_sender.clone();
-        let options = self.options.clone();
-        let user_agent = self.user_agent.clone();
-
-        info!("transmission starting");
-        // thread that processes all the work received
-        self.runtime.spawn(lazy(|| {
-            Self::process_work(work_receiver, response_sender, options, user_agent)
-        }));
     }
 
     fn process_work(
@@ -324,58 +379,6 @@ impl Transmission {
             },
             Err(err) => events.to_response(None, None, clock, Some(err.to_string())),
         }
-    }
-
-    pub(crate) fn stop(&mut self) -> Result<()> {
-        info!("transmission stopping");
-        if self.work_sender.is_full() {
-            error!("work sender is full");
-            return Err(Error::sender_full("work"));
-        }
-        Ok(self.work_sender.send(Event::stop_event())?)
-    }
-
-    pub(crate) fn send(&mut self, event: Event) {
-        let clock = Instant::now();
-        if self.work_sender.is_full() {
-            error!("work sender is full");
-            self.response_sender
-                .send(Response {
-                    status_code: None,
-                    body: None,
-                    duration: clock.elapsed(),
-                    metadata: event.metadata,
-                    error: Some("queue overflow".to_string()),
-                })
-                .unwrap_or_else(|e| {
-                    error!("response dropped, error: {}", e);
-                });
-        } else {
-            self.runtime.spawn(
-                self.work_sender
-                    .clone()
-                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
-                    .map_err(|e| {
-                        self.response_sender
-                            .send(Response {
-                                status_code: None,
-                                body: None,
-                                duration: clock.elapsed(),
-                                metadata: event.metadata,
-                                error: Some(e.to_string()),
-                            })
-                            .unwrap_or_else(|e| {
-                                error!("response dropped, error: {}", e);
-                            });
-                    })
-                    .into_future(),
-            );
-        }
-    }
-
-    /// responses provides access to the receiver
-    pub fn responses(&self) -> Receiver<Response> {
-        self.response_receiver.clone()
     }
 }
 
