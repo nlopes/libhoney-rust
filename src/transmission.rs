@@ -2,6 +2,7 @@
 
 */
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
@@ -108,12 +109,12 @@ impl Default for Options {
 }
 
 /// `Transmission` handles collecting and sending individual events to Honeycomb
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Transmission {
     pub(crate) options: Options,
     user_agent: String,
 
-    runtime: Runtime,
+    runtime: Arc<Mutex<Runtime>>,
 
     work_sender: Sender<Event>,
     work_receiver: Receiver<Event>,
@@ -136,7 +137,8 @@ impl TransmissionSender for Transmission {
 
         info!("transmission starting");
         // thread that processes all the work received
-        self.runtime.spawn(lazy(|| {
+        let runtime = self.runtime.clone();
+        runtime.lock().unwrap().spawn(lazy(|| {
             Self::process_work(work_receiver, response_sender, options, user_agent)
         }));
     }
@@ -166,7 +168,8 @@ impl TransmissionSender for Transmission {
                     error!("response dropped, error: {}", e);
                 });
         } else {
-            self.runtime.spawn(
+            let runtime = self.runtime.clone();
+            runtime.lock().unwrap().spawn(
                 self.work_sender
                     .clone()
                     .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
@@ -217,8 +220,8 @@ impl Transmission {
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
+            runtime: Arc::new(Mutex::new(runtime)),
             options,
-            runtime,
             work_sender,
             work_receiver,
             response_sender,

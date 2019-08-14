@@ -58,7 +58,7 @@ impl Default for Options {
 
 /// Client represents an object that can create new builders and events and send them
 /// somewhere.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client<T: Sender> {
     pub(crate) options: Options,
     /// transmission mechanism for the client
