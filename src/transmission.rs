@@ -63,7 +63,7 @@ const DEFAULT_NAME_PREFIX: &str = "libhoney-rust";
 // DEFAULT_MAX_BATCH_SIZE how many events to collect in a batch
 const DEFAULT_MAX_BATCH_SIZE: usize = 50;
 // DEFAULT_MAX_CONCURRENT_BATCHES how many batches to maintain in parallel
-const DEFAULT_MAX_CONCURRENT_BATCHES: usize = 80;
+const DEFAULT_MAX_CONCURRENT_BATCHES: usize = 10;
 // DEFAULT_BATCH_TIMEOUT how frequently to send unfilled batches
 const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 // DEFAULT_PENDING_WORK_CAPACITY how many events to queue up for busy batches
@@ -271,7 +271,7 @@ impl Transmission {
                 }
             };
 
-            for (_, mut batch) in batches.clone() {
+            for (_, batch) in batches.iter_mut() {
                 let options = options.clone();
 
                 if batch.len() >= options.max_batch_size || expired {
@@ -292,7 +292,6 @@ impl Transmission {
                     batch.clear();
                 }
             }
-
             // If we get here and we were expired, then we've already triggered a send, so
             // we reset this to ensure it kicks off again
             if expired {
@@ -345,7 +344,7 @@ impl Transmission {
         {
             Ok(mut res) => match res.status() {
                 StatusCode::OK => {
-                    let mut responses: Vec<HoneyResponse>;
+                    let responses: Vec<HoneyResponse>;
                     match res.json() {
                         Ok(r) => responses = r,
                         Err(e) => {
