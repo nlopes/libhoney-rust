@@ -2,12 +2,13 @@
 
 */
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use futures::future::{lazy, Future, IntoFuture};
 use log::{error, info};
+use parking_lot::Mutex;
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 use tokio_timer::clock::Clock;
@@ -138,7 +139,7 @@ impl TransmissionSender for Transmission {
         info!("transmission starting");
         // thread that processes all the work received
         let runtime = self.runtime.clone();
-        runtime.lock().unwrap().spawn(lazy(|| {
+        runtime.lock().spawn(lazy(|| {
             Self::process_work(work_receiver, response_sender, options, user_agent)
         }));
     }
@@ -169,7 +170,7 @@ impl TransmissionSender for Transmission {
                 });
         } else {
             let runtime = self.runtime.clone();
-            runtime.lock().unwrap().spawn(
+            runtime.lock().spawn(
                 self.work_sender
                     .clone()
                     .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
