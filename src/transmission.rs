@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{
+    bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
+};
 use futures::future::{lazy, Future, IntoFuture};
 use log::{error, info};
 use parking_lot::Mutex;
@@ -17,7 +19,7 @@ use crate::errors::{Error, Result};
 use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::response::{HoneyResponse, Response};
-use crate::sender::Sender as TransmissionSender;
+use crate::sender::Sender;
 
 type Events = Vec<Event>;
 
@@ -117,10 +119,10 @@ pub struct Transmission {
 
     runtime: Arc<Mutex<Runtime>>,
 
-    work_sender: Sender<Event>,
-    work_receiver: Receiver<Event>,
-    response_sender: Sender<Response>,
-    response_receiver: Receiver<Response>,
+    work_sender: ChannelSender<Event>,
+    work_receiver: ChannelReceiver<Event>,
+    response_sender: ChannelSender<Response>,
+    response_receiver: ChannelReceiver<Response>,
 }
 
 impl Drop for Transmission {
@@ -129,7 +131,7 @@ impl Drop for Transmission {
     }
 }
 
-impl TransmissionSender for Transmission {
+impl Sender for Transmission {
     fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
@@ -193,7 +195,7 @@ impl TransmissionSender for Transmission {
     }
 
     /// responses provides access to the receiver
-    fn responses(&self) -> Receiver<Response> {
+    fn responses(&self) -> ChannelReceiver<Response> {
         self.response_receiver.clone()
     }
 }
@@ -232,8 +234,8 @@ impl Transmission {
     }
 
     fn process_work(
-        work_receiver: Receiver<Event>,
-        response_sender: Sender<Response>,
+        work_receiver: ChannelReceiver<Event>,
+        response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
