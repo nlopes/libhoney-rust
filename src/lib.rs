@@ -151,6 +151,7 @@ pub mod client;
 mod errors;
 mod event;
 mod eventdata;
+mod events;
 mod fields;
 pub mod mock;
 mod response;

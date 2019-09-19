@@ -2,11 +2,15 @@
 
 */
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{
+    bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
+};
 use futures::future::{lazy, Future, IntoFuture};
 use log::{error, info};
+use parking_lot::Mutex;
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 use tokio_timer::clock::Clock;
@@ -14,47 +18,9 @@ use tokio_timer::clock::Clock;
 use crate::errors::{Error, Result};
 use crate::event::Event;
 use crate::eventdata::EventData;
+use crate::events::{Events, EventsResponse};
 use crate::response::{HoneyResponse, Response};
-use crate::sender::Sender as TransmissionSender;
-
-type Events = Vec<Event>;
-
-trait EventsResponse {
-    fn to_response(
-        &self,
-        status: Option<StatusCode>,
-        body: Option<String>,
-        clock: Instant,
-        error: Option<String>,
-    ) -> Vec<Response>;
-}
-
-impl EventsResponse for Events {
-    fn to_response(
-        &self,
-        status: Option<StatusCode>,
-        body: Option<String>,
-        clock: Instant,
-        error: Option<String>,
-    ) -> Vec<Response> {
-        let total_events = if self.is_empty() {
-            1
-        } else {
-            self.len() as u64
-        };
-
-        let spent = Duration::from_secs(clock.elapsed().as_secs() / total_events);
-        self.iter()
-            .map(|ev| Response {
-                status_code: status,
-                body: body.clone(),
-                duration: spent,
-                metadata: ev.metadata.clone(),
-                error: error.clone(),
-            })
-            .collect()
-    }
-}
+use crate::sender::Sender;
 
 const BATCH_ENDPOINT: &str = "/1/batch/";
 
@@ -62,7 +28,7 @@ const DEFAULT_NAME_PREFIX: &str = "libhoney-rust";
 // DEFAULT_MAX_BATCH_SIZE how many events to collect in a batch
 const DEFAULT_MAX_BATCH_SIZE: usize = 50;
 // DEFAULT_MAX_CONCURRENT_BATCHES how many batches to maintain in parallel
-const DEFAULT_MAX_CONCURRENT_BATCHES: usize = 80;
+const DEFAULT_MAX_CONCURRENT_BATCHES: usize = 10;
 // DEFAULT_BATCH_TIMEOUT how frequently to send unfilled batches
 const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 // DEFAULT_PENDING_WORK_CAPACITY how many events to queue up for busy batches
@@ -108,17 +74,17 @@ impl Default for Options {
 }
 
 /// `Transmission` handles collecting and sending individual events to Honeycomb
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Transmission {
     pub(crate) options: Options,
     user_agent: String,
 
-    runtime: Runtime,
+    runtime: Arc<Mutex<Runtime>>,
 
-    work_sender: Sender<Event>,
-    work_receiver: Receiver<Event>,
-    response_sender: Sender<Response>,
-    response_receiver: Receiver<Response>,
+    work_sender: ChannelSender<Event>,
+    work_receiver: ChannelReceiver<Event>,
+    response_sender: ChannelSender<Response>,
+    response_receiver: ChannelReceiver<Response>,
 }
 
 impl Drop for Transmission {
@@ -127,7 +93,7 @@ impl Drop for Transmission {
     }
 }
 
-impl TransmissionSender for Transmission {
+impl Sender for Transmission {
     fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
@@ -136,7 +102,8 @@ impl TransmissionSender for Transmission {
 
         info!("transmission starting");
         // thread that processes all the work received
-        self.runtime.spawn(lazy(|| {
+        let runtime = self.runtime.clone();
+        runtime.lock().spawn(lazy(|| {
             Self::process_work(work_receiver, response_sender, options, user_agent)
         }));
     }
@@ -166,7 +133,8 @@ impl TransmissionSender for Transmission {
                     error!("response dropped, error: {}", e);
                 });
         } else {
-            self.runtime.spawn(
+            let runtime = self.runtime.clone();
+            runtime.lock().spawn(
                 self.work_sender
                     .clone()
                     .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
@@ -189,7 +157,7 @@ impl TransmissionSender for Transmission {
     }
 
     /// responses provides access to the receiver
-    fn responses(&self) -> Receiver<Response> {
+    fn responses(&self) -> ChannelReceiver<Response> {
         self.response_receiver.clone()
     }
 }
@@ -217,8 +185,8 @@ impl Transmission {
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
+            runtime: Arc::new(Mutex::new(runtime)),
             options,
-            runtime,
             work_sender,
             work_receiver,
             response_sender,
@@ -228,8 +196,8 @@ impl Transmission {
     }
 
     fn process_work(
-        work_receiver: Receiver<Event>,
-        response_sender: Sender<Response>,
+        work_receiver: ChannelReceiver<Event>,
+        response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
     ) -> impl Future<Item = (), Error = ()> {
@@ -268,7 +236,7 @@ impl Transmission {
                 }
             };
 
-            for (_, mut batch) in batches.clone() {
+            for (_, batch) in batches.iter_mut() {
                 let options = options.clone();
 
                 if batch.len() >= options.max_batch_size || expired {
@@ -289,7 +257,6 @@ impl Transmission {
                     batch.clear();
                 }
             }
-
             // If we get here and we were expired, then we've already triggered a send, so
             // we reset this to ensure it kicks off again
             if expired {
@@ -342,7 +309,7 @@ impl Transmission {
         {
             Ok(mut res) => match res.status() {
                 StatusCode::OK => {
-                    let mut responses: Vec<HoneyResponse>;
+                    let responses: Vec<HoneyResponse>;
                     match res.json() {
                         Ok(r) => responses = r,
                         Err(e) => {

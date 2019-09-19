@@ -10,6 +10,7 @@ use crate::Event;
 use crate::Result;
 
 /// Transmission mocker for use in tests (mostly in beeline-rust)
+#[derive(Debug, Clone)]
 pub struct TransmissionMock {
     started: usize,
     stopped: usize,

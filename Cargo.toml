@@ -24,6 +24,7 @@ chrono = { version = "0.4", features = ["serde"] }
 crossbeam-channel = "0.3"
 futures = "0.1"
 log = "0.4"
+parking_lot = "0.9"
 rand = "0.7"
 reqwest = "=0.9.17"
 serde = "1.0"
