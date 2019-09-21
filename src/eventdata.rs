@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::Value;
+
+use crate::Value;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct EventData {

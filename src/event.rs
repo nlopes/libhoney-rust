@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use chrono::prelude::{DateTime, Utc};
 use log::info;
 use rand::Rng;
-use serde_json::Value;
 
 use crate::client;
 use crate::errors::{Error, Result};
 use crate::fields::FieldHolder;
 use crate::sender::Sender;
+use crate::Value;
 
 /// `Metadata` is a type alias for an optional json serialisable value
 pub type Metadata = Option<Value>;

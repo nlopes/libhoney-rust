@@ -1,6 +1,7 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
-use serde_json::Value;
+
+use crate::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {

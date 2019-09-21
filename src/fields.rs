@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use crate::errors::Result;
+use crate::Value;
 
 /// `FieldHolder` implements common functions that operate on the `fields` component of a
 /// struct (usually Event or Builder). This avoids some duplication of code.

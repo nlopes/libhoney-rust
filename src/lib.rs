@@ -1,17 +1,13 @@
 /*! Rust library for sending data to Honeycomb.
 
-# **IMPORTANT NOTE**: please do **NOT** use this in **production** (yet).
-
-But I'd be forever greatful if you can try it out and provide feedback. There are a few
-reasons why I think this is not yet for prime time (aka: production):
+I'd be forever greatful if you can try it out and provide feedback. There are a few
+reasons why I think this may not yet be ready for production use:
 
 - Honeycomb uses the singleton pattern for the libraries but I decided not to use it here (mostly due to: harder to get right, it feels to me like a rust anti-pattern). If you think I should have, please let me know.
 
 - I'm not convinced of the threading code. Although "it works" it probably isn't great - any feedback would be greatly appreciated.
 
-- I've set Metadata as a "serialisable json value" (`serde_json::Value`) - this isn't quite right but allows for a nicer use of the library. Check the [nlopes/metadata-user-set branch](https://github.com/nlopes/libhoney-rust/tree/nlopes/metadata-user-set) for a user defined Metadata instead.
-
-For these reasons, you're probably better waiting for a 1.0.0 relase (I'll follow
+For these reasons, you're probably better waiting for a 1.0.0 release (I'll follow
 [semantic versioning][semantic versioning]). Having said that, if you still want to use
 this, thank you for being brave, and make sure to open bugs against it!
 
