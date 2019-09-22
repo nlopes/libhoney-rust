@@ -122,6 +122,11 @@ impl Event {
         Ok(())
     }
 
+    /// Set options sample_rate on the event
+    pub fn set_sample_rate(&mut self, sample_rate: usize) {
+        self.options.sample_rate = sample_rate;
+    }
+
     /// Set timestamp on the event
     pub fn set_timestamp(&mut self, timestamp: DateTime<Utc>) {
         self.timestamp = timestamp;
@@ -135,6 +140,16 @@ impl Event {
     /// Get event metadata
     pub fn metadata(&self) -> Metadata {
         self.metadata.clone()
+    }
+
+    /// Get event fields
+    pub fn fields(&self) -> HashMap<String, Value> {
+        self.fields.clone()
+    }
+
+    /// Get event fields (mutable)
+    pub fn get_fields_mut(&mut self) -> &mut HashMap<String, Value> {
+        &mut self.fields
     }
 
     fn should_drop(&self) -> bool {
