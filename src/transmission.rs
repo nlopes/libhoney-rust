@@ -237,6 +237,9 @@ impl Transmission {
             };
 
             for (_, batch) in batches.iter_mut() {
+                if batch.is_empty() {
+                    break;
+                }
                 let options = options.clone();
 
                 if batch.len() >= options.max_batch_size || expired {
