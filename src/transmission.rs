@@ -236,7 +236,8 @@ impl Transmission {
                 }
             };
 
-            for (_, batch) in batches.iter_mut() {
+            let mut batches_sent = Vec::new();
+            for (batch_name, batch) in batches.iter_mut() {
                 if batch.is_empty() {
                     break;
                 }
@@ -257,9 +258,12 @@ impl Transmission {
                         }
                         Ok(()).into_future()
                     }));
-                    batch.clear();
+                    batches_sent.push(batch_name.to_string())
                 }
             }
+            // clear all sent batches
+            batches_sent.iter_mut().for_each(|name| {batches.remove(name);});
+
             // If we get here and we were expired, then we've already triggered a send, so
             // we reset this to ensure it kicks off again
             if expired {
