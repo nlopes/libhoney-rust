@@ -262,7 +262,9 @@ impl Transmission {
                 }
             }
             // clear all sent batches
-            batches_sent.iter_mut().for_each(|name| {batches.remove(name);});
+            batches_sent.iter_mut().for_each(|name| {
+                batches.remove(name);
+            });
 
             // If we get here and we were expired, then we've already triggered a send, so
             // we reset this to ensure it kicks off again
