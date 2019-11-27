@@ -29,7 +29,7 @@ rand = "=0.7.2"
 reqwest = "=0.9.22"
 serde = "=1.0.103"
 serde_json = "=1.0.42"
-tokio = "=0.1"
+tokio = "=0.2"
 tokio-timer = "=0.2"
 
 [dev-dependencies]
