@@ -60,7 +60,7 @@ impl Error {
 
     #[doc(hidden)]
     pub(crate) fn with_description(description: &str, kind: ErrorKind) -> Self {
-        Error {
+        Self {
             message: format!("error: {}", description),
             kind,
         }
@@ -81,12 +81,12 @@ impl fmt::Display for Error {
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
-        Error::with_description(e.description(), ErrorKind::Io)
+        Self::with_description(e.description(), ErrorKind::Io)
     }
 }
 
 impl<T> From<crossbeam_channel::SendError<T>> for Error {
     fn from(e: crossbeam_channel::SendError<T>) -> Self {
-        Error::with_description(&e.to_string(), ErrorKind::ChannelError)
+        Self::with_description(&e.to_string(), ErrorKind::ChannelError)
     }
 }
