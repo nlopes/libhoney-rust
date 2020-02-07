@@ -300,7 +300,7 @@ impl Transmission {
         }
 
         let endpoint = format!("{}{}{}", opts.api_host, BATCH_ENDPOINT, &opts.dataset);
-        let client = reqwest::Client::new();
+        let client = reqwest::blocking::Client::new();
 
         let user_agent = if let Some(ua_addition) = options.user_agent_addition {
             format!("{}{}", user_agent, ua_addition)
@@ -316,7 +316,7 @@ impl Transmission {
             .json(&payload)
             .send()
         {
-            Ok(mut res) => match res.status() {
+            Ok(res) => match res.status() {
                 StatusCode::OK => {
                     let responses: Vec<HoneyResponse>;
                     match res.json() {
