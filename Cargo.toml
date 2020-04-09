@@ -34,4 +34,4 @@ tokio-timer = "0.2"
 
 [dev-dependencies]
 env_logger = "0.7.1"
-mockito = "0.23.1"
+mockito = "0.25.1"
