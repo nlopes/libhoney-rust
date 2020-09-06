@@ -8,12 +8,11 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{
     bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
 };
-use futures::future::{lazy, Future, IntoFuture};
+
 use log::{error, info};
 use parking_lot::Mutex;
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
-use tokio_timer::clock::Clock;
 
 use crate::errors::{Error, Result};
 use crate::event::Event;
@@ -103,9 +102,9 @@ impl Sender for Transmission {
         info!("transmission starting");
         // thread that processes all the work received
         let runtime = self.runtime.clone();
-        runtime.lock().spawn(lazy(|| {
-            Self::process_work(work_receiver, response_sender, options, user_agent)
-        }));
+        runtime.lock().spawn(async {
+            Self::process_work(work_receiver, response_sender, options, user_agent).await
+        });
     }
 
     fn stop(&mut self) -> Result<()> {
@@ -134,12 +133,15 @@ impl Sender for Transmission {
                 });
         } else {
             let runtime = self.runtime.clone();
-            runtime.lock().spawn(
-                self.work_sender
+            let work_sender = self.work_sender.clone();
+            let event = event.clone();
+            let response_sender = self.response_sender.clone();
+            runtime.lock().spawn(async move {
+                work_sender
                     .clone()
                     .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
                     .map_err(|e| {
-                        self.response_sender
+                        response_sender
                             .send(Response {
                                 status_code: None,
                                 body: None,
@@ -151,8 +153,7 @@ impl Sender for Transmission {
                                 error!("response dropped, error: {}", e);
                             });
                     })
-                    .into_future(),
-            );
+            });
         }
     }
 
@@ -166,15 +167,13 @@ impl Transmission {
     fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
         let mut builder = Builder::new();
         if let Some(opts) = options {
-            builder
-                .blocking_threads(opts.max_concurrent_batches)
-                .core_threads(opts.max_concurrent_batches);
+            builder.core_threads(opts.max_concurrent_batches);
         };
         Ok(builder
-            .clock(Clock::system())
-            .keep_alive(Some(Duration::from_secs(60)))
-            .name_prefix("libhoney-rust")
-            .stack_size(3 * 1024 * 1024)
+            .thread_name("libhoney-rust")
+            .thread_stack_size(3 * 1024 * 1024)
+            .threaded_scheduler()
+            .enable_io()
             .build()?)
     }
 
@@ -195,13 +194,13 @@ impl Transmission {
         })
     }
 
-    fn process_work(
+    async fn process_work(
         work_receiver: ChannelReceiver<Event>,
         response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
-    ) -> impl Future<Item = (), Error = ()> {
-        let mut runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
+    ) {
+        let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
 
@@ -248,16 +247,16 @@ impl Transmission {
                     let batch_response_sender = response_sender.clone();
                     let batch_user_agent = user_agent.to_string();
 
-                    runtime.spawn(lazy(move || {
+                    runtime.spawn(async move {
                         for response in
                             Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
+                                .await
                         {
                             batch_response_sender
                                 .send(response)
                                 .expect("unable to enqueue batch response");
                         }
-                        Ok(()).into_future()
-                    }));
+                    });
                     batches_sent.push(batch_name.to_string())
                 }
             }
@@ -273,15 +272,11 @@ impl Transmission {
             }
         }
         info!("Shutting down batch processing runtime");
-        runtime
-            .shutdown_now()
-            .wait()
-            .expect("unable to shutdown batch processing runtime");
+        runtime.shutdown_background();
         info!("Batch processing runtime shut down");
-        Ok(()).into_future()
     }
 
-    fn send_batch(
+    async fn send_batch(
         events: Events,
         options: Options,
         user_agent: String,
@@ -300,7 +295,7 @@ impl Transmission {
         }
 
         let endpoint = format!("{}{}{}", opts.api_host, BATCH_ENDPOINT, &opts.dataset);
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::Client::new();
 
         let user_agent = if let Some(ua_addition) = options.user_agent_addition {
             format!("{}{}", user_agent, ua_addition)
@@ -308,18 +303,20 @@ impl Transmission {
             user_agent
         };
 
-        match client
+        let response = client
             .post(&endpoint)
             .header(header::USER_AGENT, user_agent)
             .header(header::CONTENT_TYPE, "application/json")
             .header("X-Honeycomb-Team", opts.api_key)
             .json(&payload)
             .send()
-        {
+            .await;
+
+        match response {
             Ok(res) => match res.status() {
                 StatusCode::OK => {
                     let responses: Vec<HoneyResponse>;
-                    match res.json() {
+                    match res.json().await {
                         Ok(r) => responses = r,
                         Err(e) => {
                             return events.to_response(None, None, clock, Some(e.to_string()));
@@ -346,7 +343,7 @@ impl Transmission {
                         .collect()
                 }
                 status => {
-                    let body = match res.text() {
+                    let body = match res.text().await {
                         Ok(t) => t,
                         Err(e) => format!("HTTP Error but could not read response body: {}", e),
                     };
