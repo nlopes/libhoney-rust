@@ -1,4 +1,3 @@
-use std::error::Error as _;
 use std::fmt;
 use std::io;
 
@@ -81,7 +80,7 @@ impl fmt::Display for Error {
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
-        Self::with_description(e.description(), ErrorKind::Io)
+        Self::with_description(&e.to_string(), ErrorKind::Io)
     }
 }
 
