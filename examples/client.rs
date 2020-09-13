@@ -1,9 +1,4 @@
-use env_logger;
-use log;
-
-use libhoney;
-use libhoney::Error;
-use libhoney::FieldHolder;
+use libhoney::{Error, FieldHolder};
 
 fn main() -> Result<(), Error> {
     env_logger::init();

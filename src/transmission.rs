@@ -134,7 +134,6 @@ impl Sender for Transmission {
         } else {
             let runtime = self.runtime.clone();
             let work_sender = self.work_sender.clone();
-            let event = event.clone();
             let response_sender = self.response_sender.clone();
             runtime.lock().spawn(async move {
                 work_sender
@@ -357,7 +356,6 @@ impl Transmission {
 
 #[cfg(test)]
 mod tests {
-    use mockito;
     use reqwest::StatusCode;
 
     use super::*;
