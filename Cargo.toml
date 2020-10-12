@@ -21,7 +21,7 @@ travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-crossbeam-channel = "0.4"
+crossbeam-channel = "0.5"
 futures = "0.1.29"
 log = "0.4"
 parking_lot = "0.11"
