@@ -105,15 +105,15 @@ impl Event {
             return Err(Error::missing_event_fields());
         }
 
-        if self.options.api_host == "" {
+        if self.options.api_host.is_empty() {
             return Err(Error::missing_option("api_host", "can't send to Honeycomb"));
         }
 
-        if self.options.api_key == "" {
+        if self.options.api_key.is_empty() {
             return Err(Error::missing_option("api_key", "can't send to Honeycomb"));
         }
 
-        if self.options.dataset == "" {
+        if self.options.dataset.is_empty() {
             return Err(Error::missing_option("dataset", "can't send to Honeycomb"));
         }
 
