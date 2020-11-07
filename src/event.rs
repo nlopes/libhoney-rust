@@ -175,7 +175,6 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
-    use mockito;
     use reqwest::StatusCode;
 
     use super::*;

@@ -13,5 +13,5 @@ before_script:
 
 script:
   - cargo fmt -- --check
-  - RUST_TEST_THREADS=1 cargo test --verbose # We have to set RUST_TEST_THREADS=1 due to a limitation in the mockito library
-  - cargo clippy --all-targets --all-features -- -D clippy::nursery
+  - cargo test --verbose
+  - cargo clippy --all-targets --all-features
