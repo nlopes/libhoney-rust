@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "runtime-tokio")]
+#[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
 use std::sync::Arc;
 
 use crossbeam_channel::{
@@ -15,10 +15,10 @@ use log::{error, info};
 use surf::http::headers;
 use surf::{Body, StatusCode};
 
-#[cfg(feature = "runtime-tokio")]
+#[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
 use parking_lot::Mutex;
 
-#[cfg(feature = "runtime-tokio")]
+#[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
 use tokio::runtime::{Builder, Runtime};
 
 #[cfg(feature = "runtime-async-std")]
@@ -88,7 +88,7 @@ pub struct Transmission {
     pub(crate) options: Options,
     user_agent: String,
 
-    #[cfg(feature = "runtime-tokio")]
+    #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
     runtime: Arc<Mutex<Runtime>>,
 
     work_sender: ChannelSender<Event>,
@@ -116,7 +116,7 @@ impl Sender for Transmission {
         let fut =
             async { Self::process_work(work_receiver, response_sender, options, user_agent).await };
 
-        #[cfg(feature = "runtime-tokio")]
+        #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
         {
             let runtime = self.runtime.clone();
             runtime.lock().spawn(fut);
@@ -174,7 +174,7 @@ impl Sender for Transmission {
                     })
             };
 
-            #[cfg(feature = "runtime-tokio")]
+            #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
             {
                 let runtime = self.runtime.clone();
                 runtime.lock().spawn(fut);
@@ -193,7 +193,7 @@ impl Sender for Transmission {
 }
 
 impl Transmission {
-    #[cfg(feature = "runtime-tokio")]
+    #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
     fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
         let mut builder = Builder::new();
         if let Some(opts) = options {
@@ -208,14 +208,14 @@ impl Transmission {
     }
 
     pub(crate) fn new(options: Options) -> Result<Self> {
-        #[cfg(feature = "runtime-tokio")]
+        #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
         let runtime = Self::new_runtime(None)?;
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
-            #[cfg(feature = "runtime-tokio")]
+            #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
             runtime: Arc::new(Mutex::new(runtime)),
             options,
             work_sender,
@@ -232,7 +232,7 @@ impl Transmission {
         options: Options,
         user_agent: String,
     ) {
-        #[cfg(feature = "runtime-tokio")]
+        #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
         let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
@@ -291,7 +291,7 @@ impl Transmission {
                         }
                     };
 
-                    #[cfg(feature = "runtime-tokio")]
+                    #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
                     {
                         runtime.spawn(fut);
                     }
@@ -313,7 +313,7 @@ impl Transmission {
                 expired = false;
             }
         }
-        #[cfg(feature = "runtime-tokio")]
+        #[cfg(all(feature = "runtime-tokio", not(feature = "runtime-async-std")))]
         {
             info!("Shutting down batch processing runtime");
             runtime.shutdown_background();
