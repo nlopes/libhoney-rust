@@ -175,7 +175,7 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
-    use reqwest::StatusCode;
+    use surf::StatusCode;
 
     use super::*;
     use crate::client;
@@ -227,7 +227,7 @@ mod tests {
         e.send(&mut client).unwrap();
 
         if let Some(only) = client.transmission.responses().iter().next() {
-            assert_eq!(only.status_code, Some(StatusCode::OK));
+            assert_eq!(only.status_code, Some(StatusCode::Ok));
         }
         client.close().unwrap();
     }

@@ -14,4 +14,6 @@ before_script:
 script:
   - cargo fmt -- --check
   - cargo test --verbose
-  - cargo clippy --all-targets --all-features
+  - cargo test --no-default-features --features=runtime-async-std --verbose
+  - cargo clippy --all-targets
+  - cargo clippy --all-targets --no-default-features --features=runtime-async-std

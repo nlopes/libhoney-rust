@@ -2,17 +2,27 @@
 
 */
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::convert::TryFrom;
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "runtime-tokio")]
+use std::sync::Arc;
 
 use crossbeam_channel::{
     bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
 };
-
 use log::{error, info};
+use surf::http::headers;
+use surf::{Body, StatusCode};
+
+#[cfg(feature = "runtime-tokio")]
 use parking_lot::Mutex;
-use reqwest::{header, StatusCode};
+
+#[cfg(feature = "runtime-tokio")]
 use tokio::runtime::{Builder, Runtime};
+
+#[cfg(feature = "runtime-async-std")]
+use async_std::task;
 
 use crate::errors::{Error, Result};
 use crate::event::Event;
@@ -78,6 +88,7 @@ pub struct Transmission {
     pub(crate) options: Options,
     user_agent: String,
 
+    #[cfg(feature = "runtime-tokio")]
     runtime: Arc<Mutex<Runtime>>,
 
     work_sender: ChannelSender<Event>,
@@ -101,10 +112,19 @@ impl Sender for Transmission {
 
         info!("transmission starting");
         // thread that processes all the work received
-        let runtime = self.runtime.clone();
-        runtime.lock().spawn(async {
-            Self::process_work(work_receiver, response_sender, options, user_agent).await
-        });
+
+        let fut =
+            async { Self::process_work(work_receiver, response_sender, options, user_agent).await };
+
+        #[cfg(feature = "runtime-tokio")]
+        {
+            let runtime = self.runtime.clone();
+            runtime.lock().spawn(fut);
+        }
+        #[cfg(feature = "runtime-async-std")]
+        {
+            task::spawn(fut);
+        }
     }
 
     fn stop(&mut self) -> Result<()> {
@@ -132,10 +152,10 @@ impl Sender for Transmission {
                     error!("response dropped, error: {}", e);
                 });
         } else {
-            let runtime = self.runtime.clone();
             let work_sender = self.work_sender.clone();
             let response_sender = self.response_sender.clone();
-            runtime.lock().spawn(async move {
+
+            let fut = async move {
                 work_sender
                     .clone()
                     .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
@@ -152,7 +172,17 @@ impl Sender for Transmission {
                                 error!("response dropped, error: {}", e);
                             });
                     })
-            });
+            };
+
+            #[cfg(feature = "runtime-tokio")]
+            {
+                let runtime = self.runtime.clone();
+                runtime.lock().spawn(fut);
+            }
+            #[cfg(feature = "runtime-async-std")]
+            {
+                task::spawn(fut);
+            }
         }
     }
 
@@ -163,6 +193,7 @@ impl Sender for Transmission {
 }
 
 impl Transmission {
+    #[cfg(feature = "runtime-tokio")]
     fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
         let mut builder = Builder::new();
         if let Some(opts) = options {
@@ -177,12 +208,14 @@ impl Transmission {
     }
 
     pub(crate) fn new(options: Options) -> Result<Self> {
+        #[cfg(feature = "runtime-tokio")]
         let runtime = Self::new_runtime(None)?;
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
+            #[cfg(feature = "runtime-tokio")]
             runtime: Arc::new(Mutex::new(runtime)),
             options,
             work_sender,
@@ -199,6 +232,7 @@ impl Transmission {
         options: Options,
         user_agent: String,
     ) {
+        #[cfg(feature = "runtime-tokio")]
         let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
@@ -246,7 +280,7 @@ impl Transmission {
                     let batch_response_sender = response_sender.clone();
                     let batch_user_agent = user_agent.to_string();
 
-                    runtime.spawn(async move {
+                    let fut = async move {
                         for response in
                             Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
                                 .await
@@ -255,7 +289,16 @@ impl Transmission {
                                 .send(response)
                                 .expect("unable to enqueue batch response");
                         }
-                    });
+                    };
+
+                    #[cfg(feature = "runtime-tokio")]
+                    {
+                        runtime.spawn(fut);
+                    }
+                    #[cfg(feature = "runtime-async-std")]
+                    {
+                        task::spawn(fut);
+                    }
                     batches_sent.push(batch_name.to_string())
                 }
             }
@@ -270,9 +313,12 @@ impl Transmission {
                 expired = false;
             }
         }
-        info!("Shutting down batch processing runtime");
-        runtime.shutdown_background();
-        info!("Batch processing runtime shut down");
+        #[cfg(feature = "runtime-tokio")]
+        {
+            info!("Shutting down batch processing runtime");
+            runtime.shutdown_background();
+            info!("Batch processing runtime shut down");
+        }
     }
 
     async fn send_batch(
@@ -294,7 +340,7 @@ impl Transmission {
         }
 
         let endpoint = format!("{}{}{}", opts.api_host, BATCH_ENDPOINT, &opts.dataset);
-        let client = reqwest::Client::new();
+        let client = surf::Client::new();
 
         let user_agent = if let Some(ua_addition) = options.user_agent_addition {
             format!("{}{}", user_agent, ua_addition)
@@ -302,61 +348,76 @@ impl Transmission {
             user_agent
         };
 
-        let response = client
-            .post(&endpoint)
-            .header(header::USER_AGENT, user_agent)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header("X-Honeycomb-Team", opts.api_key)
-            .json(&payload)
-            .send()
-            .await;
+        let responses = Self::send_batch_inner(
+            &events,
+            clock, // Instant is Copy
+            &client,
+            &endpoint,
+            &user_agent,
+            &opts.api_key,
+            &payload,
+        )
+        .await;
 
-        match response {
-            Ok(res) => match res.status() {
-                StatusCode::OK => {
-                    let responses: Vec<HoneyResponse>;
-                    match res.json().await {
-                        Ok(r) => responses = r,
-                        Err(e) => {
-                            return events.to_response(None, None, clock, Some(e.to_string()));
-                        }
-                    }
-                    let total_responses = if responses.is_empty() {
-                        1
-                    } else {
-                        responses.len() as u64
-                    };
-
-                    let spent = Duration::from_secs(clock.elapsed().as_secs() / total_responses);
-
-                    responses
-                        .iter()
-                        .zip(events.iter())
-                        .map(|(hr, e)| Response {
-                            status_code: StatusCode::from_u16(hr.status).ok(),
-                            body: None,
-                            duration: spent,
-                            metadata: e.metadata.clone(),
-                            error: hr.error.clone(),
-                        })
-                        .collect()
-                }
-                status => {
-                    let body = match res.text().await {
-                        Ok(t) => t,
-                        Err(e) => format!("HTTP Error but could not read response body: {}", e),
-                    };
-                    events.to_response(Some(status), Some(body), clock, None)
-                }
-            },
+        match responses {
+            Ok(responses) => responses,
             Err(err) => events.to_response(None, None, clock, Some(err.to_string())),
+        }
+    }
+
+    #[allow(clippy::ptr_arg)] // &Vec is not ideal, yes, we know
+    async fn send_batch_inner(
+        events: &Events,
+        clock: Instant,
+        client: &surf::Client,
+        endpoint: &str,
+        user_agent: &str,
+        api_key: &str,
+        payload: &Vec<EventData>,
+    ) -> surf::Result<Vec<Response>> {
+        let mut res = client
+            .post(endpoint)
+            .header(headers::USER_AGENT, user_agent)
+            .header("X-Honeycomb-Team", api_key)
+            .body(Body::from_json(payload)?)
+            .send()
+            .await?;
+
+        match res.status() {
+            StatusCode::Ok => {
+                let responses: Vec<HoneyResponse> = res.body_json().await?;
+
+                let total_responses = if responses.is_empty() {
+                    1
+                } else {
+                    responses.len() as u64
+                };
+
+                let spent = Duration::from_secs(clock.elapsed().as_secs() / total_responses);
+
+                Ok(responses
+                    .iter()
+                    .zip(events.iter())
+                    .map(|(hr, e)| Response {
+                        status_code: StatusCode::try_from(hr.status).ok(),
+                        body: None,
+                        duration: spent,
+                        metadata: e.metadata.clone(),
+                        error: hr.error.clone(),
+                    })
+                    .collect())
+            }
+            status => {
+                let body = res.body_string().await?;
+                Ok(events.to_response(Some(status), Some(body), clock, None))
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use reqwest::StatusCode;
+    use surf::StatusCode;
 
     use super::*;
     use crate::client;
@@ -438,7 +499,7 @@ mod tests {
             if i == 4 {
                 break;
             }
-            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response.status_code, Some(StatusCode::Accepted));
             assert_eq!(response.body, None);
         }
         transmission.stop().unwrap();
@@ -481,7 +542,7 @@ mod tests {
         transmission.send(event);
 
         if let Some(response) = transmission.responses().iter().next() {
-            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response.status_code, Some(StatusCode::Accepted));
             assert_eq!(response.metadata, metadata);
         } else {
             panic!("did not receive an expected response");
@@ -546,8 +607,8 @@ mod tests {
             .recv_timeout(Duration::from_millis(250))
             .err();
 
-        assert_eq!(response1.status_code, Some(StatusCode::ACCEPTED));
-        assert_eq!(response2.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response1.status_code, Some(StatusCode::Accepted));
+        assert_eq!(response2.status_code, Some(StatusCode::Accepted));
 
         // Responses can come out of order so we check against any of the metadata
         assert!(
@@ -588,7 +649,7 @@ mod tests {
         transmission.send(event);
 
         if let Some(response) = transmission.responses().iter().next() {
-            assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+            assert_eq!(response.status_code, Some(StatusCode::BadRequest));
             assert_eq!(
                 response.body,
                 Some("request body is malformed and cannot be read as JSON".to_string())

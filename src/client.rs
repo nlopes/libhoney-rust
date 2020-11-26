@@ -166,8 +166,8 @@ mod tests {
 
     #[test]
     fn test_flush() {
-        use reqwest::StatusCode;
         use serde_json::json;
+        use surf::StatusCode;
 
         let api_host = &mockito::server_url();
         let _m = mockito::mock(
@@ -194,7 +194,7 @@ mod tests {
         event.send(&mut client).unwrap();
 
         let response = client.responses().iter().next().unwrap();
-        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response.status_code, Some(StatusCode::Accepted));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
         client.flush().unwrap();
@@ -205,7 +205,7 @@ mod tests {
         event.send(&mut client).unwrap();
 
         let response = client.responses().iter().next().unwrap();
-        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+        assert_eq!(response.status_code, Some(StatusCode::Accepted));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
         client.close().unwrap();
