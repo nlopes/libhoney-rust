@@ -12,23 +12,29 @@ keywords = ["web", "honeycomb", "api"]
 categories = ["network-programming", "asynchronous", "api-bindings", "web-programming"]
 exclude = [".gitignore", ".travis.yml"]
 
+[badges]
+travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
+
 [lib]
 name = "libhoney"
 path = "src/lib.rs"
 
-[badges]
-travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
+[features]
+default = ["runtime-tokio"]
+runtime-async-std = ["async-std", "surf/curl-client"]
+runtime-tokio = ["tokio", "surf/hyper-client", "parking_lot"]
 
 [dependencies]
+async-std = { version = "1.7.0", default-features = false, features = ["alloc"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam-channel = "0.5"
 log = "0.4"
-parking_lot = "0.11"
+parking_lot = { version = "0.11", optional = true }
 rand = "0.7"
-reqwest = { version = "0.10.8", features = ["blocking", "json"] }
 serde = { version = "1.0.117", features = ["derive"] }
 serde_json = "1.0.59"
-tokio = { version = "0.2", features = ["time"] }
+surf = { version = "2.1.0", default-features = false }
+tokio = { version = "0.2", features = ["rt-threaded", "time"], optional = true }
 
 [dev-dependencies]
 env_logger = "0.8"

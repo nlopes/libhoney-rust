@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use reqwest::StatusCode;
+use surf::StatusCode;
 
 use crate::event::Event;
 use crate::response::Response;

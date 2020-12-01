@@ -1,5 +1,5 @@
-use reqwest::StatusCode;
 use serde::Deserialize;
+use surf::StatusCode;
 
 use crate::Value;
 
