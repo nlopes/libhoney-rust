@@ -173,6 +173,7 @@ impl Transmission {
             .thread_stack_size(3 * 1024 * 1024)
             .threaded_scheduler()
             .enable_io()
+            .enable_time()
             .build()?)
     }
 
