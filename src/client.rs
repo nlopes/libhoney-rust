@@ -3,7 +3,7 @@
 */
 use std::collections::HashMap;
 
-use crossbeam_channel::Receiver;
+use async_channel::Receiver;
 use log::info;
 use serde_json::Value;
 
@@ -58,9 +58,7 @@ impl Default for Options {
 
 /// Client represents an object that can create new builders and events and send them
 /// somewhere.
-#[derive(Debug, Clone)]
 pub struct Client<T: Sender> {
-    pub(crate) options: Options,
     /// transmission mechanism for the client
     pub transmission: T,
 
@@ -76,20 +74,14 @@ where
     ///
     /// Once populated, it auto starts the transmission background threads and is ready to
     /// send events.
-    pub fn new(options: Options, transmission: T) -> Self {
+    pub fn new(options: Options, mut transmission: T) -> Self {
         info!("Creating honey client");
 
-        let mut c = Self {
+        transmission.start();
+        Self {
             transmission,
-            options: options.clone(),
             builder: Builder::new(options),
-        };
-        c.start();
-        c
-    }
-
-    fn start(&mut self) {
-        self.transmission.start();
+        }
     }
 
     /// add adds its data to the Client's scope. It adds all fields in a struct or all
@@ -114,20 +106,22 @@ where
 
     /// close waits for all in-flight messages to be sent. You should call close() before
     /// app termination.
-    pub fn close(mut self) -> Result<()> {
+    pub async fn close(mut self) -> Result<()> {
         info!("closing libhoney client");
-        self.transmission.stop()
+        self.transmission.stop().await?.await?;
+        Ok(())
     }
 
-    /// flush closes and reopens the Transmission, ensuring events are sent without
-    /// waiting on the batch to be sent asyncronously. Generally, it is more efficient to
-    /// rely on asyncronous batches than to call Flush, but certain scenarios may require
-    /// Flush if asynchronous sends are not guaranteed to run (i.e. running in AWS Lambda)
+    /// flush closes and reopens the Transmission, ensuring events are sent before returning.
+    /// Generally, it is more efficient to rely on asynchronous batches than to call Flush, but
+    /// certain scenarios may require Flush if asynchronous sends are not guaranteed to run
+    /// (i.e. running in AWS Lambda).
+    ///
     /// Flush is not thread safe - use it only when you are sure that no other parts of
     /// your program are calling Send
-    pub fn flush(&mut self) -> Result<()> {
+    pub async fn flush(&mut self) -> Result<()> {
         info!("flushing libhoney client");
-        self.transmission.stop()?;
+        self.transmission.stop().await?.await?;
         self.transmission.start();
         Ok(())
     }
@@ -155,17 +149,17 @@ mod tests {
     use super::{Client, FieldHolder, Options, Value};
     use crate::transmission::{self, Transmission};
 
-    #[test]
-    fn test_init() {
+    #[async_std::test]
+    async fn test_init() {
         let client = Client::new(
             Options::default(),
             Transmission::new(transmission::Options::default()).unwrap(),
         );
-        client.close().unwrap();
+        client.close().await.unwrap();
     }
 
-    #[test]
-    fn test_flush() {
+    #[async_std::test]
+    async fn test_flush() {
         use reqwest::StatusCode;
         use serde_json::json;
 
@@ -191,28 +185,28 @@ mod tests {
         let mut event = client.new_event();
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
-        event.send(&mut client).unwrap();
+        event.send(&client).await.unwrap();
 
-        let response = client.responses().iter().next().unwrap();
+        let response = client.responses().recv().await.unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
-        client.flush().unwrap();
+        client.flush().await.unwrap();
 
         event = client.new_event();
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
-        event.send(&mut client).unwrap();
+        event.send(&client).await.unwrap();
 
-        let response = client.responses().iter().next().unwrap();
+        let response = client.responses().recv().await.unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
-        client.close().unwrap();
+        client.close().await.unwrap();
     }
 
-    #[test]
-    fn test_send_without_api_key() {
+    #[async_std::test]
+    async fn test_send_without_api_key() {
         use serde_json::json;
 
         use crate::errors::ErrorKind;
@@ -227,7 +221,7 @@ mod tests {
         .with_body("[{ \"status\": 202 }]")
         .create();
 
-        let mut client = Client::new(
+        let client = Client::new(
             Options {
                 api_host: api_host.to_string(),
                 ..Options::default()
@@ -238,13 +232,13 @@ mod tests {
         let mut event = client.new_event();
         event.add_field("some_field", Value::String("some_value".to_string()));
         event.metadata = Some(json!("some metadata in a string"));
-        let err = event.send(&mut client).err().unwrap();
+        let err = event.send(&client).await.err().unwrap();
 
         assert_eq!(err.kind, ErrorKind::MissingOption);
         assert_eq!(
             err.message,
             "missing option 'api_key', can't send to Honeycomb"
         );
-        client.close().unwrap();
+        client.close().await.unwrap();
     }
 }

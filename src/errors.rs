@@ -1,6 +1,8 @@
 use std::fmt;
 use std::io;
 
+use futures::channel::oneshot;
+
 /// Result shorthand for a `std::result::Result` wrapping our own `Error`
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -84,8 +86,14 @@ impl From<io::Error> for Error {
     }
 }
 
-impl<T> From<crossbeam_channel::SendError<T>> for Error {
-    fn from(e: crossbeam_channel::SendError<T>) -> Self {
+impl<T> From<async_channel::SendError<T>> for Error {
+    fn from(e: async_channel::SendError<T>) -> Self {
+        Self::with_description(&e.to_string(), ErrorKind::ChannelError)
+    }
+}
+
+impl From<oneshot::Canceled> for Error {
+    fn from(e: oneshot::Canceled) -> Self {
         Self::with_description(&e.to_string(), ErrorKind::ChannelError)
     }
 }

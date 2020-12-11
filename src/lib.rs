@@ -103,6 +103,7 @@ you.
 
 ### Simple: send an event
 ```rust
+# async fn async_fn() {
 # use std::collections::HashMap;
 # use serde_json::{json, Value};
 # use libhoney::{init, Config};
@@ -133,7 +134,8 @@ data.insert("payload_length".to_string(), json!(27));
 let mut ev = client.new_event();
 ev.add(data);
  // In production code, please check return of `.send()`
-ev.send(&mut client).err();
+ev.send(&mut client).await.err();
+# }
 ```
 
 [API reference]: https://docs.rs/libhoney-rust
@@ -204,13 +206,13 @@ pub mod test {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_init() {
+    #[async_std::test]
+    async fn test_init() {
         let client = init(Config {
             options: client::Options::default(),
             transmission_options: transmission::Options::default(),
         });
-        assert_eq!(client.options.dataset, "librust-dataset");
-        client.close().unwrap();
+        assert_eq!(client.new_builder().options.dataset, "librust-dataset");
+        client.close().await.unwrap();
     }
 }

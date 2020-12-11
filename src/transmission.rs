@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{
-    bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
-};
-
-use log::{error, info, trace};
-use parking_lot::Mutex;
+use async_channel::{bounded, Receiver as ChannelReceiver, Sender as ChannelSender};
+use async_std::future;
+use async_trait::async_trait;
+use crossbeam_utils::sync::WaitGroup;
+use futures::channel::oneshot;
+use futures::executor;
+use log::{debug, error, info, trace};
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 
@@ -19,7 +20,10 @@ use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::events::{Events, EventsResponse};
 use crate::response::{HoneyResponse, Response};
-use crate::sender::Sender;
+use crate::sender::{Sender, StopFuture};
+
+// Re-export reqwest client to help users avoid versioning issues.
+pub use reqwest::{Client as HttpClient, ClientBuilder as HttpClientBuilder};
 
 const BATCH_ENDPOINT: &str = "/1/batch/";
 
@@ -72,60 +76,72 @@ impl Default for Options {
     }
 }
 
+#[derive(Debug)]
+enum QueueEvent {
+    Data(Event),
+    Stop(oneshot::Sender<()>),
+}
+
 /// `Transmission` handles collecting and sending individual events to Honeycomb
 #[derive(Debug, Clone)]
 pub struct Transmission {
     pub(crate) options: Options,
     user_agent: String,
 
-    runtime: Arc<Mutex<Runtime>>,
+    runtime: Arc<Runtime>,
     http_client: reqwest::Client,
 
-    work_sender: ChannelSender<Event>,
-    work_receiver: ChannelReceiver<Event>,
+    work_sender: ChannelSender<QueueEvent>,
+    work_receiver: ChannelReceiver<QueueEvent>,
     response_sender: ChannelSender<Response>,
     response_receiver: ChannelReceiver<Response>,
 }
 
 impl Drop for Transmission {
     fn drop(&mut self) {
-        self.stop().unwrap();
+        // Wait for the stop event to bue queued, but don't wait for the queue to be flushed.
+        // Clients should call stop() themselves if they want to block.
+        executor::block_on(self.stop())
+            .map(|_: StopFuture| ())
+            .unwrap_or_else(|err| error!("Failed to enqueue stop event: {}", err));
     }
 }
 
+#[async_trait]
 impl Sender for Transmission {
     fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
+        let runtime = self.runtime.clone();
         let http_client = self.http_client.clone();
 
         info!("transmission starting");
-        // thread that processes all the work received
-        let runtime = self.runtime.clone();
-        runtime.lock().spawn(async {
-            Self::process_work(
-                work_receiver,
-                response_sender,
-                options,
-                user_agent,
-                http_client,
-            )
-            .await
-        });
+        // Task that processes all the work received.
+        runtime.handle().spawn(Self::process_work(
+            work_receiver,
+            response_sender,
+            options,
+            user_agent,
+            http_client,
+        ));
     }
 
-    fn stop(&mut self) -> Result<()> {
+    async fn stop(&mut self) -> Result<StopFuture> {
         info!("transmission stopping");
         if self.work_sender.is_full() {
             error!("work sender is full");
             return Err(Error::sender_full("work"));
         }
-        Ok(self.work_sender.send(Event::stop_event())?)
+
+        trace!("Sending stop event");
+        let (sender, receiver) = oneshot::channel();
+        self.work_sender.send(QueueEvent::Stop(sender)).await?;
+        Ok(Box::new(receiver))
     }
 
-    fn send(&mut self, event: Event) {
+    async fn send(&self, event: Event) {
         let clock = Instant::now();
         if self.work_sender.is_full() {
             error!("work sender is full");
@@ -137,31 +153,32 @@ impl Sender for Transmission {
                     metadata: event.metadata,
                     error: Some("queue overflow".to_string()),
                 })
+                .await
                 .unwrap_or_else(|e| {
                     error!("response dropped, error: {}", e);
                 });
         } else {
-            let runtime = self.runtime.clone();
             let work_sender = self.work_sender.clone();
             let response_sender = self.response_sender.clone();
-            runtime.lock().spawn(async move {
-                work_sender
-                    .clone()
-                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
-                    .map_err(|e| {
-                        response_sender
-                            .send(Response {
-                                status_code: None,
-                                body: None,
-                                duration: clock.elapsed(),
-                                metadata: event.metadata,
-                                error: Some(e.to_string()),
-                            })
-                            .unwrap_or_else(|e| {
-                                error!("response dropped, error: {}", e);
-                            });
+            if let Err(e) = future::timeout(
+                DEFAULT_SEND_TIMEOUT,
+                work_sender.clone().send(QueueEvent::Data(event.clone())),
+            )
+            .await
+            {
+                response_sender
+                    .send(Response {
+                        status_code: None,
+                        body: None,
+                        duration: clock.elapsed(),
+                        metadata: event.metadata,
+                        error: Some(e.to_string()),
                     })
-            });
+                    .await
+                    .unwrap_or_else(|e| {
+                        error!("response dropped, error: {}", e);
+                    });
+            }
         }
     }
 
@@ -175,7 +192,9 @@ impl Transmission {
     fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
         let mut builder = Builder::new_multi_thread();
         if let Some(opts) = options {
-            builder.worker_threads(opts.max_concurrent_batches);
+            // Allows one thread for coordinating the batches and `max_concurrent_batches` threads
+            // for sending them to Honeycomb.
+            builder.worker_threads(opts.max_concurrent_batches + 1);
         };
         Ok(builder
             .thread_name("libhoney-rust")
@@ -186,13 +205,13 @@ impl Transmission {
     }
 
     pub(crate) fn new(options: Options) -> Result<Self> {
-        let runtime = Self::new_runtime(None)?;
+        let runtime = Self::new_runtime(Some(&options))?;
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
-            runtime: Arc::new(Mutex::new(runtime)),
+            runtime: Arc::new(runtime),
             options,
             work_sender,
             work_receiver,
@@ -203,47 +222,61 @@ impl Transmission {
         })
     }
 
+    /// Sets a custom reqwest client.
+    pub fn set_http_client(&mut self, http_client: HttpClient) {
+        self.http_client = http_client;
+    }
+
     async fn process_work(
-        work_receiver: ChannelReceiver<Event>,
+        work_receiver: ChannelReceiver<QueueEvent>,
         response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
         http_client: reqwest::Client,
     ) {
-        let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
+        // Used for waiting on every task spawned by this worker thread to complete.
+        let wait_group = WaitGroup::new();
 
-        loop {
+        let stop_sender = loop {
             let options = options.clone();
 
-            match work_receiver.recv_timeout(options.batch_timeout) {
-                Ok(event) => {
-                    if event.fields.contains_key("internal_stop_event") {
-                        info!("got 'internal_stop_event' event");
-                        break;
+            let stop_sender =
+                match future::timeout(options.batch_timeout, work_receiver.recv()).await {
+                    Ok(Ok(QueueEvent::Stop(sender))) => {
+                        debug!("Processing stop event");
+                        Some(sender)
                     }
-                    let key = format!(
-                        "{}_{}_{}",
-                        event.options.api_host, event.options.api_key, event.options.dataset
-                    );
-                    batches
-                        .entry(key)
-                        .and_modify(|v| v.push(event.clone()))
-                        .or_insert({
-                            let mut v = Vec::with_capacity(options.max_batch_size);
-                            v.push(event);
-                            v
-                        });
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    expired = true;
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    // TODO(nlopes): is this the right behaviour?
-                    break;
-                }
-            };
+                    Ok(Ok(QueueEvent::Data(event))) => {
+                        trace!(
+                            "Processing data event for dataset `{}`",
+                            event.options.dataset,
+                        );
+                        let key = format!(
+                            "{}_{}_{}",
+                            event.options.api_host, event.options.api_key, event.options.dataset
+                        );
+                        batches
+                            .entry(key)
+                            .and_modify(|v| v.push(event.clone()))
+                            .or_insert({
+                                let mut v = Vec::with_capacity(options.max_batch_size);
+                                v.push(event);
+                                v
+                            });
+                        None
+                    }
+                    Err(future::TimeoutError { .. }) => {
+                        expired = true;
+                        None
+                    }
+                    Ok(Err(recv_err)) => {
+                        error!("Error receiving from work channel: {}", recv_err);
+                        // TODO(nlopes): is this the right behaviour?
+                        break None;
+                    }
+                };
 
             let mut batches_sent = Vec::new();
             for (batch_name, batch) in batches.iter_mut() {
@@ -252,11 +285,20 @@ impl Transmission {
                 }
                 let options = options.clone();
 
-                if batch.len() >= options.max_batch_size || expired {
-                    trace!(
-                        "Timer expired or batch size exceeded with {} event(s)",
-                        batch.len()
-                    );
+                let should_process_batch = if batch.len() >= options.max_batch_size {
+                    trace!("Batch size exceeded with {} event(s)", batch.len());
+                    true
+                } else if expired {
+                    trace!("Timer expired with {} event(s)", batch.len());
+                    true
+                } else if stop_sender.is_some() {
+                    trace!("Shutting down worker and flushing {} event(s)", batch.len());
+                    true
+                } else {
+                    false
+                };
+
+                if should_process_batch {
                     let batch_copy = batch.clone();
                     let batch_response_sender = response_sender.clone();
                     let batch_user_agent = user_agent.to_string();
@@ -265,8 +307,11 @@ impl Transmission {
                     //   "You do not have to wrap the Client it in an Rc or Arc to reuse it, because
                     //    it already uses an Arc internally."
                     let client_copy = http_client.clone();
+                    let wait_group_copy = wait_group.clone();
 
-                    runtime.spawn(async move {
+                    tokio::task::spawn(async move {
+                        // When this is dropped, it removes the task from the wait group.
+                        let _wait_group = wait_group_copy;
                         for response in Self::send_batch(
                             batch_copy,
                             options,
@@ -278,6 +323,7 @@ impl Transmission {
                         {
                             batch_response_sender
                                 .send(response)
+                                .await
                                 .expect("unable to enqueue batch response");
                         }
                     });
@@ -289,15 +335,30 @@ impl Transmission {
                 batches.remove(name);
             });
 
-            // If we get here and we were expired, then we've already triggered a send, so
-            // we reset this to ensure it kicks off again
-            if expired {
+            if stop_sender.is_some() {
+                break stop_sender;
+            } else if expired {
+                // If we get here and we were expired, then we've already triggered a send, so
+                // we reset this to ensure it kicks off again
                 expired = false;
             }
+        };
+
+        // Wait for all in-progress batches to be sent before completing the worker task. This
+        // ensures that waiting on the worker task to complete also waits on any batches to
+        // finish being sent.
+        tokio::task::block_in_place(move || {
+            trace!("waiting for pending batches to be sent");
+            wait_group.wait();
+            trace!("no batches remaining");
+        });
+
+        if let Some(sender) = stop_sender {
+            sender.send(()).unwrap_or_else(|()| {
+                // This happens if the caller doesn't await the future.
+                error!("Stop receiver was dropped before notification was sent")
+            });
         }
-        info!("Shutting down batch processing runtime");
-        runtime.shutdown_background();
-        info!("Batch processing runtime shut down");
     }
 
     async fn send_batch(
@@ -421,8 +482,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_responses() {
+    #[async_std::test]
+    async fn test_responses() {
         use crate::fields::FieldHolder;
 
         let mut transmission = Transmission::new(Options {
@@ -452,27 +513,25 @@ mod tests {
         )
         .create();
 
-        for i in 0..5 {
+        for i in 0i32..5 {
             let mut event = Event::new(&client::Options {
                 api_key: "some_api_key".to_string(),
                 api_host: api_host.to_string(),
                 ..client::Options::default()
             });
             event.add_field("id", serde_json::from_str(&i.to_string()).unwrap());
-            transmission.send(event);
+            transmission.send(event).await;
         }
-        for (i, response) in transmission.responses().iter().enumerate() {
-            if i == 4 {
-                break;
-            }
+        for _i in 0i32..5 {
+            let response = transmission.responses().recv().await.unwrap();
             assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
             assert_eq!(response.body, None);
         }
-        transmission.stop().unwrap();
+        transmission.stop().await.unwrap().await.unwrap();
     }
 
-    #[test]
-    fn test_metadata() {
+    #[async_std::test]
+    async fn test_metadata() {
         use serde_json::json;
 
         let mut transmission = Transmission::new(Options {
@@ -505,19 +564,19 @@ mod tests {
             ..client::Options::default()
         });
         event.metadata = metadata.clone();
-        transmission.send(event);
+        transmission.send(event).await;
 
-        if let Some(response) = transmission.responses().iter().next() {
+        if let Ok(response) = transmission.responses().recv().await {
             assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
             assert_eq!(response.metadata, metadata);
         } else {
             panic!("did not receive an expected response");
         }
-        transmission.stop().unwrap();
+        transmission.stop().await.unwrap().await.unwrap();
     }
 
-    #[test]
-    fn test_multiple_batches() {
+    #[async_std::test]
+    async fn test_multiple_batches() {
         // What we try to test here is if events are sent in separate batches, depending
         // on their combination of api_host, api_key, dataset.
         //
@@ -562,15 +621,14 @@ mod tests {
         event3.options.dataset = "other".to_string();
         event3.metadata = Some(json!("event3"));
 
-        transmission.send(event3);
-        transmission.send(event2);
-        transmission.send(event1);
+        transmission.send(event3).await;
+        transmission.send(event2).await;
+        transmission.send(event1).await;
 
-        let response1 = transmission.responses().iter().next().unwrap();
-        let response2 = transmission.responses().iter().next().unwrap();
-        let _ = transmission
-            .responses()
-            .recv_timeout(Duration::from_millis(250))
+        let response1 = transmission.responses().recv().await.unwrap();
+        let response2 = transmission.responses().recv().await.unwrap();
+        let _ = future::timeout(Duration::from_millis(250), transmission.responses().recv())
+            .await
             .err();
 
         assert_eq!(response1.status_code, Some(StatusCode::ACCEPTED));
@@ -585,11 +643,11 @@ mod tests {
             response2.metadata == Some(json!("event1"))
                 || response2.metadata == Some(json!("event2"))
         );
-        transmission.stop().unwrap();
+        transmission.stop().await.unwrap().await.unwrap();
     }
 
-    #[test]
-    fn test_bad_response() {
+    #[async_std::test]
+    async fn test_bad_response() {
         use serde_json::json;
 
         let mut transmission = Transmission::new(Options::default()).unwrap();
@@ -612,9 +670,9 @@ mod tests {
         });
 
         event.metadata = Some(json!("some metadata in a string"));
-        transmission.send(event);
+        transmission.send(event).await;
 
-        if let Some(response) = transmission.responses().iter().next() {
+        if let Ok(response) = transmission.responses().recv().await {
             assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
             assert_eq!(
                 response.body,
@@ -623,6 +681,6 @@ mod tests {
         } else {
             panic!("did not receive an expected response");
         }
-        transmission.stop().unwrap();
+        transmission.stop().await.unwrap().await.unwrap();
     }
 }
