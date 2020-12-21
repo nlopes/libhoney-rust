@@ -156,7 +156,7 @@ impl Event {
         if self.options.sample_rate <= 1 {
             return false;
         }
-        rand::thread_rng().gen_range(0, self.options.sample_rate) != 0
+        rand::thread_rng().gen_range(0..self.options.sample_rate) != 0
     }
 
     pub(crate) fn stop_event() -> Self {
