@@ -33,7 +33,7 @@ rand = "0.8"
 reqwest = { version = "0.10.8", features = ["blocking", "json"], default-features = false }
 serde = { version = "1.0.117", features = ["derive"] }
 serde_json = "1.0.59"
-tokio = { version = "0.2", features = ["time"] }
+tokio = { version = "1.0", features = ["time"] }
 
 [dev-dependencies]
 env_logger = "0.8"
