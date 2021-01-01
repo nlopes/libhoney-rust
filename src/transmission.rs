@@ -21,6 +21,9 @@ use crate::events::{Events, EventsResponse};
 use crate::response::{HoneyResponse, Response};
 use crate::sender::Sender;
 
+// Re-export reqwest client to help users avoid versioning issues.
+pub use reqwest::{Client as HttpClient, ClientBuilder as HttpClientBuilder};
+
 const BATCH_ENDPOINT: &str = "/1/batch/";
 
 const DEFAULT_NAME_PREFIX: &str = "libhoney-rust";
@@ -79,7 +82,7 @@ pub struct Transmission {
     user_agent: String,
 
     runtime: Arc<Mutex<Runtime>>,
-    http_client: reqwest::Client,
+    http_client: HttpClient,
 
     work_sender: ChannelSender<Event>,
     work_receiver: ChannelReceiver<Event>,
@@ -200,8 +203,13 @@ impl Transmission {
             response_sender,
             response_receiver,
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
-            http_client: reqwest::Client::new(),
+            http_client: HttpClient::new(),
         })
+    }
+
+    /// Sets a custom reqwest client.
+    pub fn set_http_client(&mut self, http_client: HttpClient) {
+        self.http_client = http_client;
     }
 
     async fn process_work(
