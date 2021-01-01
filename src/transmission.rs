@@ -79,6 +79,7 @@ pub struct Transmission {
     user_agent: String,
 
     runtime: Arc<Mutex<Runtime>>,
+    http_client: reqwest::Client,
 
     work_sender: ChannelSender<Event>,
     work_receiver: ChannelReceiver<Event>,
@@ -98,12 +99,20 @@ impl Sender for Transmission {
         let response_sender = self.response_sender.clone();
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
+        let http_client = self.http_client.clone();
 
         info!("transmission starting");
         // thread that processes all the work received
         let runtime = self.runtime.clone();
         runtime.lock().spawn(async {
-            Self::process_work(work_receiver, response_sender, options, user_agent).await
+            Self::process_work(
+                work_receiver,
+                response_sender,
+                options,
+                user_agent,
+                http_client,
+            )
+            .await
         });
     }
 
@@ -191,6 +200,7 @@ impl Transmission {
             response_sender,
             response_receiver,
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
+            http_client: reqwest::Client::new(),
         })
     }
 
@@ -199,9 +209,9 @@ impl Transmission {
         response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
+        http_client: reqwest::Client,
     ) {
         let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
-        let client = reqwest::Client::new();
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
 
@@ -255,7 +265,7 @@ impl Transmission {
                     // From the reqwest docs:
                     //   "You do not have to wrap the Client it in an Rc or Arc to reuse it, because
                     //    it already uses an Arc internally."
-                    let client_copy = client.clone();
+                    let client_copy = http_client.clone();
 
                     runtime.spawn(async move {
                         for response in Self::send_batch(
