@@ -173,14 +173,13 @@ impl Sender for Transmission {
 
 impl Transmission {
     fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
-        let mut builder = Builder::new();
+        let mut builder = Builder::new_multi_thread();
         if let Some(opts) = options {
-            builder.core_threads(opts.max_concurrent_batches);
+            builder.worker_threads(opts.max_concurrent_batches);
         };
         Ok(builder
             .thread_name("libhoney-rust")
             .thread_stack_size(3 * 1024 * 1024)
-            .threaded_scheduler()
             .enable_io()
             .enable_time()
             .build()?)
