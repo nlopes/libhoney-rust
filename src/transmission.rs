@@ -9,7 +9,7 @@ use crossbeam_channel::{
     bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
 };
 
-use log::{error, info};
+use log::{error, info, trace};
 use parking_lot::Mutex;
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
@@ -79,6 +79,7 @@ pub struct Transmission {
     user_agent: String,
 
     runtime: Arc<Mutex<Runtime>>,
+    http_client: reqwest::Client,
 
     work_sender: ChannelSender<Event>,
     work_receiver: ChannelReceiver<Event>,
@@ -98,12 +99,20 @@ impl Sender for Transmission {
         let response_sender = self.response_sender.clone();
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
+        let http_client = self.http_client.clone();
 
         info!("transmission starting");
         // thread that processes all the work received
         let runtime = self.runtime.clone();
         runtime.lock().spawn(async {
-            Self::process_work(work_receiver, response_sender, options, user_agent).await
+            Self::process_work(
+                work_receiver,
+                response_sender,
+                options,
+                user_agent,
+                http_client,
+            )
+            .await
         });
     }
 
@@ -191,6 +200,7 @@ impl Transmission {
             response_sender,
             response_receiver,
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
+            http_client: reqwest::Client::new(),
         })
     }
 
@@ -199,6 +209,7 @@ impl Transmission {
         response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
+        http_client: reqwest::Client,
     ) {
         let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
@@ -243,14 +254,28 @@ impl Transmission {
                 let options = options.clone();
 
                 if batch.len() >= options.max_batch_size || expired {
+                    trace!(
+                        "Timer expired or batch size exceeded with {} event(s)",
+                        batch.len()
+                    );
                     let batch_copy = batch.clone();
                     let batch_response_sender = response_sender.clone();
                     let batch_user_agent = user_agent.to_string();
+                    // This is a shallow clone that allows reusing HTTPS connections across batches.
+                    // From the reqwest docs:
+                    //   "You do not have to wrap the Client it in an Rc or Arc to reuse it, because
+                    //    it already uses an Arc internally."
+                    let client_copy = http_client.clone();
 
                     runtime.spawn(async move {
-                        for response in
-                            Self::send_batch(batch_copy, options, batch_user_agent, Instant::now())
-                                .await
+                        for response in Self::send_batch(
+                            batch_copy,
+                            options,
+                            batch_user_agent,
+                            Instant::now(),
+                            client_copy,
+                        )
+                        .await
                         {
                             batch_response_sender
                                 .send(response)
@@ -281,6 +306,7 @@ impl Transmission {
         options: Options,
         user_agent: String,
         clock: Instant,
+        client: reqwest::Client,
     ) -> Vec<Response> {
         let mut opts: crate::client::Options = crate::client::Options::default();
         let mut payload: Vec<EventData> = Vec::new();
@@ -295,7 +321,6 @@ impl Transmission {
         }
 
         let endpoint = format!("{}{}{}", opts.api_host, BATCH_ENDPOINT, &opts.dataset);
-        let client = reqwest::Client::new();
 
         let user_agent = if let Some(ua_addition) = options.user_agent_addition {
             format!("{}{}", user_agent, ua_addition)
@@ -303,6 +328,7 @@ impl Transmission {
             user_agent
         };
 
+        trace!("Sending payload: {:#?}", payload);
         let response = client
             .post(&endpoint)
             .header(header::USER_AGENT, user_agent)
@@ -312,6 +338,7 @@ impl Transmission {
             .send()
             .await;
 
+        trace!("Received response: {:#?}", response);
         match response {
             Ok(res) => match res.status() {
                 StatusCode::OK => {
