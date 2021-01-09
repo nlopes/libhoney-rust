@@ -14,10 +14,16 @@ jobs:
   build_and_test:
     name: Build and test
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       matrix:
         os: [ubuntu-20.04]
-        rust: [stable]
+        rust: [stable, beta]
+        experimental: [false]
+        include:
+          - rust: nightly
+            os: ubuntu-20.04
+            experimental: true
 
     steps:
     - uses: actions/checkout@master
