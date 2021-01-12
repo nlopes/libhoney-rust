@@ -6,7 +6,7 @@
 
 # libhoney-rust
 
-Rust library for sending data to [Honeycomb](https://www.honeycomb.io/).
+Rust library for sending data to Honeycomb.
 
 I'd be forever greatful if you can try it out and provide feedback. There are a few
 reasons why I think this may not yet be ready for production use:
