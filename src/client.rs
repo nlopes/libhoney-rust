@@ -105,11 +105,13 @@ where
     }
 
     /// close waits for all in-flight messages to be sent. You should call close() before
-    /// app termination.
-    pub async fn close(mut self) -> Result<()> {
+    /// app termination. The returned `Transmission` should be dropped outside of a Tokio
+    /// async context so that the contained runtime can be dropped safely. Otherwise, Tokio
+    /// will panic when dropping the runtime.
+    pub async fn close(mut self) -> Result<T> {
         info!("closing libhoney client");
         self.transmission.stop().await?.await?;
-        Ok(())
+        Ok(self.transmission)
     }
 
     /// flush closes and reopens the Transmission, ensuring events are sent before returning.
