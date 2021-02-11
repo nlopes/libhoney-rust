@@ -31,8 +31,9 @@ impl Sender for TransmissionMock {
     }
 
     // `start` initializes any background processes necessary to send events
-    fn start(&mut self) {
+    fn start(&mut self) -> Result<()> {
         self.started += 1;
+        Ok(())
     }
 
     // `stop` flushes any pending queues and blocks until everything in flight has

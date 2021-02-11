@@ -2,6 +2,7 @@ use std::fmt;
 use std::io;
 
 use futures::channel::oneshot;
+use futures::task::SpawnError;
 
 /// Result shorthand for a `std::result::Result` wrapping our own `Error`
 pub type Result<T> = std::result::Result<T, Error>;
@@ -23,6 +24,9 @@ pub enum ErrorKind {
 
     /// Any IO related error
     Io,
+
+    /// Failed to spawn future
+    Spawn,
 }
 
 /// Error
@@ -95,5 +99,10 @@ impl<T> From<async_channel::SendError<T>> for Error {
 impl From<oneshot::Canceled> for Error {
     fn from(e: oneshot::Canceled) -> Self {
         Self::with_description(&e.to_string(), ErrorKind::ChannelError)
+    }
+}
+impl From<SpawnError> for Error {
+    fn from(e: SpawnError) -> Self {
+        Self::with_description(&e.to_string(), ErrorKind::Spawn)
     }
 }

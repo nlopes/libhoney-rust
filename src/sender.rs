@@ -22,7 +22,7 @@ pub trait Sender {
     async fn send(&self, ev: Event);
 
     /// `start` initializes any background processes necessary to send events
-    fn start(&mut self);
+    fn start(&mut self) -> Result<()>;
 
     /// `stop` flushes any pending queues and blocks until everything in flight has been
     /// sent. The returned oneshot receiver is notified when all events have been flushed.

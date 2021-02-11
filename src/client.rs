@@ -74,14 +74,14 @@ where
     ///
     /// Once populated, it auto starts the transmission background threads and is ready to
     /// send events.
-    pub fn new(options: Options, mut transmission: T) -> Self {
+    pub fn new(options: Options, mut transmission: T) -> Result<Self> {
         info!("Creating honey client");
 
-        transmission.start();
-        Self {
+        transmission.start()?;
+        Ok(Self {
             transmission,
             builder: Builder::new(options),
-        }
+        })
     }
 
     /// add adds its data to the Client's scope. It adds all fields in a struct or all
@@ -124,7 +124,7 @@ where
     pub async fn flush(&mut self) -> Result<()> {
         info!("flushing libhoney client");
         self.transmission.stop().await?.await?;
-        self.transmission.start();
+        self.transmission.start()?;
         Ok(())
     }
 
@@ -149,98 +149,108 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Client, FieldHolder, Options, Value};
+    use crate::test::run_with_supported_executors;
     use crate::transmission::{self, Transmission};
 
-    #[async_std::test]
-    async fn test_init() {
-        let client = Client::new(
-            Options::default(),
-            Transmission::new(transmission::Options::default()).unwrap(),
-        );
-        client.close().await.unwrap();
+    #[test]
+    fn test_init() {
+        run_with_supported_executors(|executor| async move {
+            let client = Client::new(
+                Options::default(),
+                Transmission::new(executor, transmission::Options::default()).unwrap(),
+            )
+            .unwrap();
+            client.close().await.unwrap();
+        })
     }
 
-    #[async_std::test]
-    async fn test_flush() {
-        use reqwest::StatusCode;
-        use serde_json::json;
+    #[test]
+    fn test_flush() {
+        run_with_supported_executors(|executor| async move {
+            use reqwest::StatusCode;
+            use serde_json::json;
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body("[{ \"status\": 202 }]")
-        .create();
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[{ \"status\": 202 }]")
+            .create();
 
-        let mut client = Client::new(
-            Options {
-                api_key: "some api key".to_string(),
-                api_host: api_host.to_string(),
-                ..Options::default()
-            },
-            Transmission::new(transmission::Options::default()).unwrap(),
-        );
+            let mut client = Client::new(
+                Options {
+                    api_key: "some api key".to_string(),
+                    api_host: api_host.to_string(),
+                    ..Options::default()
+                },
+                Transmission::new(executor, transmission::Options::default()).unwrap(),
+            )
+            .unwrap();
 
-        let mut event = client.new_event();
-        event.add_field("some_field", Value::String("some_value".to_string()));
-        event.metadata = Some(json!("some metadata in a string"));
-        event.send(&client).await.unwrap();
+            let mut event = client.new_event();
+            event.add_field("some_field", Value::String("some_value".to_string()));
+            event.metadata = Some(json!("some metadata in a string"));
+            event.send(&client).await.unwrap();
 
-        let response = client.responses().recv().await.unwrap();
-        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
-        assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+            let response = client.responses().recv().await.unwrap();
+            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
-        client.flush().await.unwrap();
+            client.flush().await.unwrap();
 
-        event = client.new_event();
-        event.add_field("some_field", Value::String("some_value".to_string()));
-        event.metadata = Some(json!("some metadata in a string"));
-        event.send(&client).await.unwrap();
+            event = client.new_event();
+            event.add_field("some_field", Value::String("some_value".to_string()));
+            event.metadata = Some(json!("some metadata in a string"));
+            event.send(&client).await.unwrap();
 
-        let response = client.responses().recv().await.unwrap();
-        assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
-        assert_eq!(response.metadata, Some(json!("some metadata in a string")));
+            let response = client.responses().recv().await.unwrap();
+            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
-        client.close().await.unwrap();
+            client.close().await.unwrap();
+        })
     }
 
-    #[async_std::test]
-    async fn test_send_without_api_key() {
-        use serde_json::json;
+    #[test]
+    fn test_send_without_api_key() {
+        run_with_supported_executors(|executor| async move {
+            use serde_json::json;
 
-        use crate::errors::ErrorKind;
+            use crate::errors::ErrorKind;
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body("[{ \"status\": 202 }]")
-        .create();
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[{ \"status\": 202 }]")
+            .create();
 
-        let client = Client::new(
-            Options {
-                api_host: api_host.to_string(),
-                ..Options::default()
-            },
-            Transmission::new(transmission::Options::default()).unwrap(),
-        );
+            let client = Client::new(
+                Options {
+                    api_host: api_host.to_string(),
+                    ..Options::default()
+                },
+                Transmission::new(executor, transmission::Options::default()).unwrap(),
+            )
+            .unwrap();
 
-        let mut event = client.new_event();
-        event.add_field("some_field", Value::String("some_value".to_string()));
-        event.metadata = Some(json!("some metadata in a string"));
-        let err = event.send(&client).await.err().unwrap();
+            let mut event = client.new_event();
+            event.add_field("some_field", Value::String("some_value".to_string()));
+            event.metadata = Some(json!("some metadata in a string"));
+            let err = event.send(&client).await.err().unwrap();
 
-        assert_eq!(err.kind, ErrorKind::MissingOption);
-        assert_eq!(
-            err.message,
-            "missing option 'api_key', can't send to Honeycomb"
-        );
-        client.close().await.unwrap();
+            assert_eq!(err.kind, ErrorKind::MissingOption);
+            assert_eq!(
+                err.message,
+                "missing option 'api_key', can't send to Honeycomb"
+            );
+            client.close().await.unwrap();
+        })
     }
 }

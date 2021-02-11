@@ -29,14 +29,23 @@ up background threads to handle sending all the events. Calling .close() on the 
 will terminate all background threads.
 
 ```rust
-let client = libhoney::init(libhoney::Config{
+use std::sync::Arc;
+use async_executors::TokioTpBuilder;
+
+let mut builder = TokioTpBuilder::new();
+builder
+  .tokio_builder()
+  .enable_io();
+let executor = Arc::new(builder.build().expect("failed to build Tokio executor"));
+let client = libhoney::init(libhoney::Config {
+  executor,
   options: libhoney::client::Options {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
     ..libhoney::client::Options::default()
   },
   transmission_options: libhoney::transmission::Options::default(),
-});
+}).expect("failed to spawn Honeycomb client");
 
 client.close();
 ```
@@ -103,7 +112,6 @@ you.
 
 ### Simple: send an event
 ```rust
-# async fn async_fn() {
 # use std::collections::HashMap;
 # use serde_json::{json, Value};
 # use libhoney::{init, Config};
@@ -118,24 +126,34 @@ you.
 # .create();
 
 # let options = libhoney::client::Options{api_host: api_host.to_string(), api_key: "some key".to_string(), ..libhoney::client::Options::default()};
+use std::sync::Arc;
 use libhoney::FieldHolder; // Add trait to allow for adding fields
-// Call init to get a client
-let mut client = init(libhoney::Config {
-  options: options,
-  transmission_options: libhoney::transmission::Options::default(),
-});
+use async_executors::TokioTpBuilder;
 
-let mut data: HashMap<String, Value> = HashMap::new();
-data.insert("duration_ms".to_string(), json!(153.12));
-data.insert("method".to_string(), Value::String("get".to_string()));
-data.insert("hostname".to_string(), Value::String("appserver15".to_string()));
-data.insert("payload_length".to_string(), json!(27));
+let mut builder = TokioTpBuilder::new();
+builder
+  .tokio_builder()
+  .enable_io();
+let executor = Arc::new(builder.build().expect("failed to build Tokio executor"));
+executor.block_on(async {
+  // Call init to get a client
+  let mut client = init(libhoney::Config {
+    executor: executor.clone(),
+    options: options,
+    transmission_options: libhoney::transmission::Options::default(),
+  }).expect("failed to spawn Honeycomb client");
 
-let mut ev = client.new_event();
-ev.add(data);
- // In production code, please check return of `.send()`
-ev.send(&mut client).await.err();
-# }
+  let mut data: HashMap<String, Value> = HashMap::new();
+  data.insert("duration_ms".to_string(), json!(153.12));
+  data.insert("method".to_string(), Value::String("get".to_string()));
+  data.insert("hostname".to_string(), Value::String("appserver15".to_string()));
+  data.insert("payload_length".to_string(), json!(27));
+
+  let mut ev = client.new_event();
+  ev.add(data);
+   // In production code, please check return of `.send()`
+  ev.send(&mut client).await.err();
+})
 ```
 
 [API reference]: https://docs.rs/libhoney-rust
@@ -144,6 +162,11 @@ ev.send(&mut client).await.err();
  */
 #![deny(missing_docs)]
 
+use std::sync::Arc;
+
+use derivative::Derivative;
+use futures::task::Spawn;
+
 mod builder;
 pub mod client;
 mod errors;
@@ -151,7 +174,8 @@ mod event;
 mod eventdata;
 mod events;
 mod fields;
-pub mod mock;
+#[cfg(test)]
+mod mock;
 mod response;
 mod sender;
 pub mod transmission;
@@ -165,11 +189,25 @@ pub use sender::Sender;
 pub use serde_json::{json, Value};
 use transmission::Transmission;
 
+/// Futures executor on which async tasks will be spawned.
+///
+/// See the [`async_executors`](https://crates.io/crates/async_executors) crate for wrappers
+/// that support common executors such as Tokio and async-std.
+pub type FutureExecutor = Arc<dyn Spawn + Send + Sync>;
+
 /// Config allows the user to customise the initialisation of the library (effectively the
 /// Client)
-#[derive(Debug, Clone)]
+#[derive(Derivative, Clone)]
+#[derivative(Debug)]
 #[must_use = "must be set up for client to be properly initialised"]
 pub struct Config {
+    /// Futures executor on which async tasks will be spawned.
+    ///
+    /// See the [`async_executors`](https://crates.io/crates/async_executors) crate for wrappers
+    /// that support common executors such as Tokio and async-std.
+    #[derivative(Debug = "ignore")]
+    pub executor: FutureExecutor,
+
     /// options is a subset of the global libhoney config that focuses on the
     /// configuration of the client itself. The other config options are specific to a
     /// given transmission Sender and should be specified there if the defaults need to be
@@ -185,34 +223,79 @@ pub struct Config {
 /// init is called on app initialisation and passed a `Config`. A `Config` has two sets of
 /// options (`client::Options` and `transmission::Options`).
 #[inline]
-pub fn init(config: Config) -> Client<Transmission> {
-    let transmission =
-        Transmission::new(config.transmission_options).expect("failed to instantiate transmission");
+pub fn init(config: Config) -> Result<Client<Transmission>> {
+    let transmission = Transmission::new(config.executor, config.transmission_options)
+        .expect("failed to instantiate transmission");
     Client::new(config.options, transmission)
 }
 
 /// Auxiliary test module
+#[cfg(test)]
 pub mod test {
-    use crate::mock;
+    use std::sync::Arc;
+
+    use async_executors::{AsyncStd, TokioTpBuilder};
+    use futures::Future;
+
+    use crate::errors::Result;
+    use crate::{mock, FutureExecutor};
+
     /// `init` is purely used for testing purposes
-    pub fn init(config: super::Config) -> super::Client<mock::TransmissionMock> {
+    pub fn init(config: super::Config) -> Result<super::Client<mock::TransmissionMock>> {
         let transmission = mock::TransmissionMock::new(config.transmission_options)
             .expect("failed to instantiate transmission");
         super::Client::new(config.options, transmission)
+    }
+
+    #[allow(dead_code)]
+    pub fn run_with_async_std<F, Fut, T>(f: F) -> T
+    where
+        F: FnOnce(FutureExecutor) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let executor = Arc::new(AsyncStd::new());
+        AsyncStd::block_on(f(executor))
+    }
+
+    pub fn run_with_tokio_multi_threaded<F, Fut, T>(f: F) -> T
+    where
+        F: FnOnce(FutureExecutor) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let mut builder = TokioTpBuilder::new();
+        builder.tokio_builder().enable_io();
+        let executor = Arc::new(builder.build().expect("failed to build Tokio executor"));
+        executor.block_on(f(executor.clone()))
+    }
+
+    pub fn run_with_supported_executors<F, Fut>(f: F)
+    where
+        F: Fn(FutureExecutor) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        // FIXME: Switch from reqwest to surf and allow user to choose an HTTP client that works
+        // with their runtime. Reqwest only works with Tokio and WASM.
+        //run_with_async_std(&f);
+        run_with_tokio_multi_threaded(&f);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test::run_with_supported_executors;
 
-    #[async_std::test]
-    async fn test_init() {
-        let client = init(Config {
-            options: client::Options::default(),
-            transmission_options: transmission::Options::default(),
-        });
-        assert_eq!(client.new_builder().options.dataset, "librust-dataset");
-        client.close().await.unwrap();
+    #[test]
+    fn test_init() {
+        run_with_supported_executors(|executor| async move {
+            let client = init(Config {
+                executor,
+                options: client::Options::default(),
+                transmission_options: transmission::Options::default(),
+            })
+            .unwrap();
+            assert_eq!(client.new_builder().options.dataset, "librust-dataset");
+            client.close().await.unwrap();
+        })
     }
 }
