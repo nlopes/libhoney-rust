@@ -3,13 +3,11 @@
 */
 use std::collections::HashMap;
 
-use crossbeam_channel::Receiver;
 use log::info;
 use serde_json::Value;
 
 use crate::errors::Result;
 use crate::fields::FieldHolder;
-use crate::response::Response;
 use crate::sender::Sender;
 use crate::Event;
 use crate::{Builder, DynamicFieldFunc};
@@ -142,11 +140,6 @@ where
     /// scope.
     pub fn new_event(&self) -> Event {
         self.builder.new_event()
-    }
-
-    /// responses returns a receiver channel with responses
-    pub fn responses(&self) -> Receiver<Response> {
-        self.transmission.responses()
     }
 }
 

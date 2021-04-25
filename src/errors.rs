@@ -50,14 +50,6 @@ impl Error {
     }
 
     #[doc(hidden)]
-    pub(crate) fn sender_full(sender: &str) -> Self {
-        Self {
-            message: format!("sender '{}' is full", sender),
-            kind: ErrorKind::ChannelError,
-        }
-    }
-
-    #[doc(hidden)]
     pub(crate) fn with_description(description: &str, kind: ErrorKind) -> Self {
         Self {
             message: format!("error: {}", description),
@@ -81,11 +73,5 @@ impl fmt::Display for Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         Self::with_description(&e.to_string(), ErrorKind::Io)
-    }
-}
-
-impl<T> From<crossbeam_channel::SendError<T>> for Error {
-    fn from(e: crossbeam_channel::SendError<T>) -> Self {
-        Self::with_description(&e.to_string(), ErrorKind::ChannelError)
     }
 }
