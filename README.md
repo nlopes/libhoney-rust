@@ -37,14 +37,23 @@ up background threads to handle sending all the events. Calling .close() on the 
 will terminate all background threads.
 
 ```rust
-let client = libhoney::init(libhoney::Config{
+use std::sync::Arc;
+use async_executors::TokioTpBuilder;
+
+let mut builder = TokioTpBuilder::new();
+builder
+  .tokio_builder()
+  .enable_io();
+let executor = Arc::new(builder.build().expect("failed to build Tokio executor"));
+let client = libhoney::init(libhoney::Config {
+  executor,
   options: libhoney::client::Options {
     api_key: "YOUR_API_KEY".to_string(),
     dataset: "honeycomb-rust-example".to_string(),
     ..libhoney::client::Options::default()
   },
   transmission_options: libhoney::transmission::Options::default(),
-});
+}).expect("failed to spawn Honeycomb client");
 
 client.close();
 ```
@@ -112,23 +121,34 @@ you.
 #### Simple: send an event
 ```rust
 
+use std::sync::Arc;
 use libhoney::FieldHolder; // Add trait to allow for adding fields
-// Call init to get a client
-let mut client = init(libhoney::Config {
-  options: options,
-  transmission_options: libhoney::transmission::Options::default(),
-});
+use async_executors::TokioTpBuilder;
 
-let mut data: HashMap<String, Value> = HashMap::new();
-data.insert("duration_ms".to_string(), json!(153.12));
-data.insert("method".to_string(), Value::String("get".to_string()));
-data.insert("hostname".to_string(), Value::String("appserver15".to_string()));
-data.insert("payload_length".to_string(), json!(27));
+let mut builder = TokioTpBuilder::new();
+builder
+  .tokio_builder()
+  .enable_io();
+let executor = Arc::new(builder.build().expect("failed to build Tokio executor"));
+executor.block_on(async {
+  // Call init to get a client
+  let mut client = init(libhoney::Config {
+    executor: executor.clone(),
+    options: options,
+    transmission_options: libhoney::transmission::Options::default(),
+  }).expect("failed to spawn Honeycomb client");
 
-let mut ev = client.new_event();
-ev.add(data);
- // In production code, please check return of `.send()`
-ev.send(&mut client).err();
+  let mut data: HashMap<String, Value> = HashMap::new();
+  data.insert("duration_ms".to_string(), json!(153.12));
+  data.insert("method".to_string(), Value::String("get".to_string()));
+  data.insert("hostname".to_string(), Value::String("appserver15".to_string()));
+  data.insert("payload_length".to_string(), json!(27));
+
+  let mut ev = client.new_event();
+  ev.add(data);
+   // In production code, please check return of `.send()`
+  ev.send(&mut client).await.err();
+})
 ```
 
 [API reference]: https://docs.rs/libhoney-rust

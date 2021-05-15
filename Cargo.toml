@@ -25,16 +25,23 @@ rustls-tls = ["reqwest/rustls-tls"]
 travis-ci = { repository = "nlopes/libhoney-rust", branch = "master" }
 
 [dependencies]
+async-channel = "1.5"
+# Need the `unstable` feature to enable `Condvar`. Note that this is unrelated to unstable Rust
+# features and does not require a nightly Rust. This pins to the exact version since unstable
+# features may not respect SemVer.
+async-std = { version = "1.9.0", features = ["unstable"] }
+async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-crossbeam-channel = "0.5"
+derivative = "2.2"
+futures = "0.3"
 log = "0.4"
-parking_lot = "0.11"
 rand = "0.8"
 reqwest = { version = "0.11.0", features = ["blocking", "json"], default-features = false }
 serde = { version = "1.0.118", features = ["derive"] }
 serde_json = "1.0.61"
-tokio = { version = "1.0", features = ["time"], default-features = false }
 
 [dev-dependencies]
+async_executors = { version = "0.4", features = ["async_std", "tokio_tp"] }
 env_logger = "0.8"
 mockito = "0.29"
+tokio = { version = "1.0", features = ["time"], default-features = false }

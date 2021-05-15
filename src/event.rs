@@ -78,12 +78,12 @@ impl Event {
     ///
     /// Once you send an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send<T: Sender>(&mut self, client: &mut client::Client<T>) -> Result<()> {
+    pub async fn send<T: Sender>(&mut self, client: &client::Client<T>) -> Result<()> {
         if self.should_drop() {
             info!("dropping event due to sampling");
             return Ok(());
         }
-        self.send_presampled(client)
+        self.send_presampled(client).await
     }
 
     /// `send_presampled` dispatches the event to be sent to Honeycomb.
@@ -100,7 +100,7 @@ impl Event {
     ///
     /// Once you `send` an event, any addition calls to add data to that event will return
     /// without doing anything. Once the event is sent, it becomes immutable.
-    pub fn send_presampled<T: Sender>(&mut self, client: &mut client::Client<T>) -> Result<()> {
+    pub async fn send_presampled<T: Sender>(&mut self, client: &client::Client<T>) -> Result<()> {
         if self.fields.is_empty() {
             return Err(Error::missing_event_fields());
         }
@@ -118,7 +118,7 @@ impl Event {
         }
 
         self.sent = true;
-        client.transmission.send(self.clone());
+        client.transmission.send(self.clone()).await;
         Ok(())
     }
 
@@ -158,19 +158,6 @@ impl Event {
         }
         rand::thread_rng().gen_range(0..self.options.sample_rate) != 0
     }
-
-    pub(crate) fn stop_event() -> Self {
-        let mut h: HashMap<String, Value> = HashMap::new();
-        h.insert("internal_stop_event".to_string(), Value::Null);
-
-        Self {
-            options: client::Options::default(),
-            timestamp: Utc::now(),
-            fields: h,
-            metadata: None,
-            sent: false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -179,6 +166,7 @@ mod tests {
 
     use super::*;
     use crate::client;
+    use crate::test::run_with_supported_executors;
 
     #[test]
     fn test_add() {
@@ -195,76 +183,88 @@ mod tests {
 
     #[test]
     fn test_send() {
-        use crate::transmission;
+        run_with_supported_executors(|executor| async move {
+            use crate::transmission;
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body("[{ \"status\": 200 }]")
-        .create();
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[{ \"status\": 200 }]")
+            .create();
 
-        let options = client::Options {
-            api_key: "some api key".to_string(),
-            api_host: api_host.to_string(),
-            ..client::Options::default()
-        };
+            let options = client::Options {
+                api_key: "some api key".to_string(),
+                api_host: api_host.to_string(),
+                ..client::Options::default()
+            };
 
-        let mut client = client::Client::new(
-            options.clone(),
-            transmission::Transmission::new(transmission::Options {
-                max_batch_size: 1,
-                ..transmission::Options::default()
-            })
-            .unwrap(),
-        );
+            let client = client::Client::new(
+                options.clone(),
+                transmission::Transmission::new(
+                    executor,
+                    transmission::Options {
+                        max_batch_size: 1,
+                        ..transmission::Options::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
 
-        let mut e = Event::new(&options);
-        e.add_field("field_name", Value::String("field_value".to_string()));
-        e.send(&mut client).unwrap();
+            let mut e = Event::new(&options);
+            e.add_field("field_name", Value::String("field_value".to_string()));
+            e.send(&client).await.unwrap();
 
-        if let Some(only) = client.transmission.responses().iter().next() {
-            assert_eq!(only.status_code, Some(StatusCode::OK));
-        }
-        client.close().unwrap();
+            if let Ok(only) = client.transmission.responses().recv().await {
+                assert_eq!(only.status_code, Some(StatusCode::OK));
+            }
+            client.close().await.unwrap();
+        })
     }
 
     #[test]
     fn test_empty() {
-        use crate::errors::ErrorKind;
-        use crate::transmission;
+        run_with_supported_executors(|executor| async move {
+            use crate::errors::ErrorKind;
+            use crate::transmission;
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body("[{ \"status\": 200 }]")
-        .create();
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[{ \"status\": 200 }]")
+            .create();
 
-        let mut client = client::Client::new(
-            client::Options {
-                api_key: "some api key".to_string(),
-                api_host: api_host.to_string(),
-                ..client::Options::default()
-            },
-            transmission::Transmission::new(transmission::Options {
-                max_batch_size: 1,
-                ..transmission::Options::default()
-            })
-            .unwrap(),
-        );
+            let client = client::Client::new(
+                client::Options {
+                    api_key: "some api key".to_string(),
+                    api_host: api_host.to_string(),
+                    ..client::Options::default()
+                },
+                transmission::Transmission::new(
+                    executor,
+                    transmission::Options {
+                        max_batch_size: 1,
+                        ..transmission::Options::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
 
-        let mut e = client.new_event();
-        assert_eq!(
-            e.send(&mut client).err().unwrap().kind,
-            ErrorKind::MissingEventFields
-        );
-        client.close().unwrap();
+            let mut e = client.new_event();
+            assert_eq!(
+                e.send(&client).await.err().unwrap().kind,
+                ErrorKind::MissingEventFields
+            );
+            client.close().await.unwrap();
+        })
     }
 }

@@ -5,21 +5,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{
-    bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
-};
-
-use log::{error, info, trace};
-use parking_lot::Mutex;
+use async_channel::{bounded, Receiver as ChannelReceiver, Sender as ChannelSender};
+use async_std::future;
+use async_std::sync::{Condvar, Mutex};
+use async_trait::async_trait;
+use derivative::Derivative;
+use futures::channel::oneshot;
+use futures::executor;
+use futures::task::{Spawn, SpawnExt};
+use log::{debug, error, info, trace};
 use reqwest::{header, StatusCode};
-use tokio::runtime::{Builder, Runtime};
 
 use crate::errors::{Error, Result};
 use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::events::{Events, EventsResponse};
 use crate::response::{HoneyResponse, Response};
-use crate::sender::Sender;
+use crate::sender::{Sender, StopFuture};
+use crate::FutureExecutor;
+
+// Re-export reqwest client to help users avoid versioning issues.
+pub use reqwest::{Client as HttpClient, ClientBuilder as HttpClientBuilder};
 
 const BATCH_ENDPOINT: &str = "/1/batch/";
 
@@ -72,60 +78,77 @@ impl Default for Options {
     }
 }
 
+#[derive(Debug)]
+enum QueueEvent {
+    Data(Event),
+    Stop(oneshot::Sender<()>),
+}
+
 /// `Transmission` handles collecting and sending individual events to Honeycomb
-#[derive(Debug, Clone)]
+#[derive(Derivative, Clone)]
+#[derivative(Debug)]
 pub struct Transmission {
     pub(crate) options: Options,
     user_agent: String,
 
-    runtime: Arc<Mutex<Runtime>>,
+    #[derivative(Debug = "ignore")]
+    executor: FutureExecutor,
     http_client: reqwest::Client,
 
-    work_sender: ChannelSender<Event>,
-    work_receiver: ChannelReceiver<Event>,
+    work_sender: ChannelSender<QueueEvent>,
+    work_receiver: ChannelReceiver<QueueEvent>,
     response_sender: ChannelSender<Response>,
     response_receiver: ChannelReceiver<Response>,
 }
 
 impl Drop for Transmission {
     fn drop(&mut self) {
-        self.stop().unwrap();
+        // Wait for the stop event to bue queued, but don't wait for the queue to be flushed.
+        // Clients should call stop() themselves if they want to block.
+        executor::block_on(self.stop())
+            .map(|_: StopFuture| ())
+            .unwrap_or_else(|err| error!("Failed to enqueue stop event: {}", err));
     }
 }
 
+#[async_trait]
 impl Sender for Transmission {
-    fn start(&mut self) {
+    fn start(&mut self) -> Result<()> {
         let work_receiver = self.work_receiver.clone();
         let response_sender = self.response_sender.clone();
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
+        let executor = self.executor.clone();
         let http_client = self.http_client.clone();
 
         info!("transmission starting");
-        // thread that processes all the work received
-        let runtime = self.runtime.clone();
-        runtime.lock().spawn(async {
-            Self::process_work(
+        // Task that processes all the work received.
+        executor
+            .spawn(Self::process_work(
                 work_receiver,
                 response_sender,
+                executor.clone(),
                 options,
                 user_agent,
                 http_client,
-            )
-            .await
-        });
+            ))
+            .map_err(Error::from)
     }
 
-    fn stop(&mut self) -> Result<()> {
+    async fn stop(&mut self) -> Result<StopFuture> {
         info!("transmission stopping");
         if self.work_sender.is_full() {
             error!("work sender is full");
             return Err(Error::sender_full("work"));
         }
-        Ok(self.work_sender.send(Event::stop_event())?)
+
+        trace!("Sending stop event");
+        let (sender, receiver) = oneshot::channel();
+        self.work_sender.send(QueueEvent::Stop(sender)).await?;
+        Ok(Box::new(receiver))
     }
 
-    fn send(&mut self, event: Event) {
+    async fn send(&self, event: Event) {
         let clock = Instant::now();
         if self.work_sender.is_full() {
             error!("work sender is full");
@@ -137,31 +160,32 @@ impl Sender for Transmission {
                     metadata: event.metadata,
                     error: Some("queue overflow".to_string()),
                 })
+                .await
                 .unwrap_or_else(|e| {
                     error!("response dropped, error: {}", e);
                 });
         } else {
-            let runtime = self.runtime.clone();
             let work_sender = self.work_sender.clone();
             let response_sender = self.response_sender.clone();
-            runtime.lock().spawn(async move {
-                work_sender
-                    .clone()
-                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
-                    .map_err(|e| {
-                        response_sender
-                            .send(Response {
-                                status_code: None,
-                                body: None,
-                                duration: clock.elapsed(),
-                                metadata: event.metadata,
-                                error: Some(e.to_string()),
-                            })
-                            .unwrap_or_else(|e| {
-                                error!("response dropped, error: {}", e);
-                            });
+            if let Err(e) = future::timeout(
+                DEFAULT_SEND_TIMEOUT,
+                work_sender.clone().send(QueueEvent::Data(event.clone())),
+            )
+            .await
+            {
+                response_sender
+                    .send(Response {
+                        status_code: None,
+                        body: None,
+                        duration: clock.elapsed(),
+                        metadata: event.metadata,
+                        error: Some(e.to_string()),
                     })
-            });
+                    .await
+                    .unwrap_or_else(|e| {
+                        error!("response dropped, error: {}", e);
+                    });
+            }
         }
     }
 
@@ -171,28 +195,57 @@ impl Sender for Transmission {
     }
 }
 
-impl Transmission {
-    fn new_runtime(options: Option<&Options>) -> Result<Runtime> {
-        let mut builder = Builder::new_multi_thread();
-        if let Some(opts) = options {
-            builder.worker_threads(opts.max_concurrent_batches);
-        };
-        Ok(builder
-            .thread_name("libhoney-rust")
-            .thread_stack_size(3 * 1024 * 1024)
-            .enable_io()
-            .enable_time()
-            .build()?)
+struct BatchWaiter {
+    batches_in_progress: Arc<Mutex<usize>>,
+    condvar: Arc<Condvar>,
+}
+impl BatchWaiter {
+    pub fn new() -> Self {
+        Self {
+            batches_in_progress: Arc::new(Mutex::new(0)),
+            condvar: Arc::new(Condvar::new()),
+        }
     }
 
-    pub(crate) fn new(options: Options) -> Result<Self> {
-        let runtime = Self::new_runtime(None)?;
+    // Takes a mutable reference so that only the top-level caller can spawn batches.
+    pub async fn start_batch(&mut self) -> BatchWaiterGuard {
+        let mut lock_guard = self.batches_in_progress.lock().await;
+        *lock_guard += 1;
+        BatchWaiterGuard {
+            batches_in_progress: self.batches_in_progress.clone(),
+            condvar: self.condvar.clone(),
+        }
+    }
 
+    pub async fn wait_for_completion(self) {
+        let mut lock_guard = self.batches_in_progress.lock().await;
+        while *lock_guard != 0 {
+            lock_guard = self.condvar.wait(lock_guard).await;
+        }
+    }
+}
+
+#[must_use]
+struct BatchWaiterGuard {
+    batches_in_progress: Arc<Mutex<usize>>,
+    condvar: Arc<Condvar>,
+}
+impl BatchWaiterGuard {
+    // We can't implement this using Drop since Drop::drop can't use async.
+    async fn end_batch(self) {
+        let mut lock_guard = self.batches_in_progress.lock().await;
+        *lock_guard -= 1;
+        self.condvar.notify_one();
+    }
+}
+
+impl Transmission {
+    pub(crate) fn new(executor: FutureExecutor, options: Options) -> Result<Self> {
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
         let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
-            runtime: Arc::new(Mutex::new(runtime)),
+            executor,
             options,
             work_sender,
             work_receiver,
@@ -203,47 +256,61 @@ impl Transmission {
         })
     }
 
+    /// Sets a custom reqwest client.
+    pub fn set_http_client(&mut self, http_client: HttpClient) {
+        self.http_client = http_client;
+    }
+
     async fn process_work(
-        work_receiver: ChannelReceiver<Event>,
+        work_receiver: ChannelReceiver<QueueEvent>,
         response_sender: ChannelSender<Response>,
+        executor: Arc<dyn Spawn + Send + Sync>,
         options: Options,
         user_agent: String,
         http_client: reqwest::Client,
     ) {
-        let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
+        let mut batches_in_progress = BatchWaiter::new();
 
-        loop {
+        let stop_sender = loop {
             let options = options.clone();
 
-            match work_receiver.recv_timeout(options.batch_timeout) {
-                Ok(event) => {
-                    if event.fields.contains_key("internal_stop_event") {
-                        info!("got 'internal_stop_event' event");
-                        break;
+            let stop_sender =
+                match future::timeout(options.batch_timeout, work_receiver.recv()).await {
+                    Ok(Ok(QueueEvent::Stop(sender))) => {
+                        debug!("Processing stop event");
+                        Some(sender)
                     }
-                    let key = format!(
-                        "{}_{}_{}",
-                        event.options.api_host, event.options.api_key, event.options.dataset
-                    );
-                    batches
-                        .entry(key)
-                        .and_modify(|v| v.push(event.clone()))
-                        .or_insert({
-                            let mut v = Vec::with_capacity(options.max_batch_size);
-                            v.push(event);
-                            v
-                        });
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    expired = true;
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    // TODO(nlopes): is this the right behaviour?
-                    break;
-                }
-            };
+                    Ok(Ok(QueueEvent::Data(event))) => {
+                        trace!(
+                            "Processing data event for dataset `{}`",
+                            event.options.dataset,
+                        );
+                        let key = format!(
+                            "{}_{}_{}",
+                            event.options.api_host, event.options.api_key, event.options.dataset
+                        );
+                        batches
+                            .entry(key)
+                            .and_modify(|v| v.push(event.clone()))
+                            .or_insert({
+                                let mut v = Vec::with_capacity(options.max_batch_size);
+                                v.push(event);
+                                v
+                            });
+                        None
+                    }
+                    Err(future::TimeoutError { .. }) => {
+                        expired = true;
+                        None
+                    }
+                    Ok(Err(recv_err)) => {
+                        error!("Error receiving from work channel: {}", recv_err);
+                        // TODO(nlopes): is this the right behaviour?
+                        break None;
+                    }
+                };
 
             let mut batches_sent = Vec::new();
             for (batch_name, batch) in batches.iter_mut() {
@@ -252,11 +319,20 @@ impl Transmission {
                 }
                 let options = options.clone();
 
-                if batch.len() >= options.max_batch_size || expired {
-                    trace!(
-                        "Timer expired or batch size exceeded with {} event(s)",
-                        batch.len()
-                    );
+                let should_process_batch = if batch.len() >= options.max_batch_size {
+                    trace!("Batch size exceeded with {} event(s)", batch.len());
+                    true
+                } else if expired {
+                    trace!("Timer expired with {} event(s)", batch.len());
+                    true
+                } else if stop_sender.is_some() {
+                    trace!("Shutting down worker and flushing {} event(s)", batch.len());
+                    true
+                } else {
+                    false
+                };
+
+                if should_process_batch {
                     let batch_copy = batch.clone();
                     let batch_response_sender = response_sender.clone();
                     let batch_user_agent = user_agent.to_string();
@@ -266,7 +342,8 @@ impl Transmission {
                     //    it already uses an Arc internally."
                     let client_copy = http_client.clone();
 
-                    runtime.spawn(async move {
+                    let batch_guard = batches_in_progress.start_batch().await;
+                    match executor.spawn(async move {
                         for response in Self::send_batch(
                             batch_copy,
                             options,
@@ -278,9 +355,17 @@ impl Transmission {
                         {
                             batch_response_sender
                                 .send(response)
+                                .await
                                 .expect("unable to enqueue batch response");
                         }
-                    });
+                        batch_guard.end_batch().await;
+                    }) {
+                        Ok(_) => {}
+                        Err(spawn_err) => {
+                            error!("Failed to spawn task to send batch: {}", spawn_err);
+                        }
+                    }
+
                     batches_sent.push(batch_name.to_string())
                 }
             }
@@ -289,15 +374,26 @@ impl Transmission {
                 batches.remove(name);
             });
 
-            // If we get here and we were expired, then we've already triggered a send, so
-            // we reset this to ensure it kicks off again
-            if expired {
+            if stop_sender.is_some() {
+                break stop_sender;
+            } else if expired {
+                // If we get here and we were expired, then we've already triggered a send, so
+                // we reset this to ensure it kicks off again
                 expired = false;
             }
+        };
+
+        // Wait for all in-progress batches to be sent before completing the worker task. This
+        // ensures that waiting on the worker task to complete also waits on any batches to
+        // finish being sent.
+        batches_in_progress.wait_for_completion().await;
+
+        if let Some(sender) = stop_sender {
+            sender.send(()).unwrap_or_else(|()| {
+                // This happens if the caller doesn't await the future.
+                error!("Stop receiver was dropped before notification was sent")
+            });
         }
-        info!("Shutting down batch processing runtime");
-        runtime.shutdown_background();
-        info!("Batch processing runtime shut down");
     }
 
     async fn send_batch(
@@ -387,60 +483,72 @@ mod tests {
 
     use super::*;
     use crate::client;
+    use crate::test::run_with_supported_executors;
 
     #[test]
     fn test_defaults() {
-        let transmission = Transmission::new(Options::default()).unwrap();
-        assert_eq!(
-            transmission.user_agent,
-            format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION"))
-        );
+        run_with_supported_executors(|executor| async move {
+            let transmission = Transmission::new(executor, Options::default()).unwrap();
+            assert_eq!(
+                transmission.user_agent,
+                format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION"))
+            );
 
-        assert_eq!(transmission.options.max_batch_size, DEFAULT_MAX_BATCH_SIZE);
-        assert_eq!(transmission.options.batch_timeout, DEFAULT_BATCH_TIMEOUT);
-        assert_eq!(
-            transmission.options.max_concurrent_batches,
-            DEFAULT_MAX_CONCURRENT_BATCHES
-        );
-        assert_eq!(
-            transmission.options.pending_work_capacity,
-            DEFAULT_PENDING_WORK_CAPACITY
-        );
+            assert_eq!(transmission.options.max_batch_size, DEFAULT_MAX_BATCH_SIZE);
+            assert_eq!(transmission.options.batch_timeout, DEFAULT_BATCH_TIMEOUT);
+            assert_eq!(
+                transmission.options.max_concurrent_batches,
+                DEFAULT_MAX_CONCURRENT_BATCHES
+            );
+            assert_eq!(
+                transmission.options.pending_work_capacity,
+                DEFAULT_PENDING_WORK_CAPACITY
+            );
+        })
     }
 
     #[test]
     fn test_modifiable_defaults() {
-        let transmission = Transmission::new(Options {
-            user_agent_addition: Some(" something/0.3".to_string()),
-            ..Options::default()
+        run_with_supported_executors(|executor| async move {
+            let transmission = Transmission::new(
+                executor,
+                Options {
+                    user_agent_addition: Some(" something/0.3".to_string()),
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                transmission.options.user_agent_addition,
+                Some(" something/0.3".to_string())
+            );
         })
-        .unwrap();
-        assert_eq!(
-            transmission.options.user_agent_addition,
-            Some(" something/0.3".to_string())
-        );
     }
 
     #[test]
     fn test_responses() {
-        use crate::fields::FieldHolder;
+        run_with_supported_executors(|executor| async move {
+            use crate::fields::FieldHolder;
 
-        let mut transmission = Transmission::new(Options {
-            max_batch_size: 5,
-            ..Options::default()
-        })
-        .unwrap();
-        transmission.start();
+            let mut transmission = Transmission::new(
+                executor,
+                Options {
+                    max_batch_size: 5,
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            transmission.start().unwrap();
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            r#"
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"
 [
   { "status":202 },
   { "status":202 },
@@ -449,180 +557,190 @@ mod tests {
   { "status":202 }
 ]
 "#,
-        )
-        .create();
+            )
+            .create();
 
-        for i in 0..5 {
+            for i in 0i32..5 {
+                let mut event = Event::new(&client::Options {
+                    api_key: "some_api_key".to_string(),
+                    api_host: api_host.to_string(),
+                    ..client::Options::default()
+                });
+                event.add_field("id", serde_json::from_str(&i.to_string()).unwrap());
+                transmission.send(event).await;
+            }
+            for _i in 0i32..5 {
+                let response = transmission.responses().recv().await.unwrap();
+                assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+                assert_eq!(response.body, None);
+            }
+            transmission.stop().await.unwrap().await.unwrap();
+        })
+    }
+
+    #[test]
+    fn test_metadata() {
+        run_with_supported_executors(|executor| async move {
+            use serde_json::json;
+
+            let mut transmission = Transmission::new(
+                executor,
+                Options {
+                    max_batch_size: 1,
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            transmission.start().unwrap();
+
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"
+[
+  { "status":202 }
+]
+"#,
+            )
+            .create();
+
+            let metadata = Some(json!("some metadata in a string"));
             let mut event = Event::new(&client::Options {
                 api_key: "some_api_key".to_string(),
                 api_host: api_host.to_string(),
                 ..client::Options::default()
             });
-            event.add_field("id", serde_json::from_str(&i.to_string()).unwrap());
-            transmission.send(event);
-        }
-        for (i, response) in transmission.responses().iter().enumerate() {
-            if i == 4 {
-                break;
+            event.metadata = metadata.clone();
+            transmission.send(event).await;
+
+            if let Ok(response) = transmission.responses().recv().await {
+                assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
+                assert_eq!(response.metadata, metadata);
+            } else {
+                panic!("did not receive an expected response");
             }
-            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
-            assert_eq!(response.body, None);
-        }
-        transmission.stop().unwrap();
-    }
-
-    #[test]
-    fn test_metadata() {
-        use serde_json::json;
-
-        let mut transmission = Transmission::new(Options {
-            max_batch_size: 1,
-            ..Options::default()
+            transmission.stop().await.unwrap().await.unwrap();
         })
-        .unwrap();
-        transmission.start();
-
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            r#"
-[
-  { "status":202 }
-]
-"#,
-        )
-        .create();
-
-        let metadata = Some(json!("some metadata in a string"));
-        let mut event = Event::new(&client::Options {
-            api_key: "some_api_key".to_string(),
-            api_host: api_host.to_string(),
-            ..client::Options::default()
-        });
-        event.metadata = metadata.clone();
-        transmission.send(event);
-
-        if let Some(response) = transmission.responses().iter().next() {
-            assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
-            assert_eq!(response.metadata, metadata);
-        } else {
-            panic!("did not receive an expected response");
-        }
-        transmission.stop().unwrap();
     }
 
     #[test]
     fn test_multiple_batches() {
-        // What we try to test here is if events are sent in separate batches, depending
-        // on their combination of api_host, api_key, dataset.
-        //
-        // For that, we set max_batch_size to 2, then we send 3 events, 2 with one
-        // combination and 1 with another.  Only the two should be sent, and we should get
-        // back two responses.
-        use serde_json::json;
-        let mut transmission = Transmission::new(Options {
-            max_batch_size: 2,
-            batch_timeout: Duration::from_secs(5),
-            ..Options::default()
-        })
-        .unwrap();
-        transmission.start();
+        run_with_supported_executors(|executor| async move {
+            // What we try to test here is if events are sent in separate batches, depending
+            // on their combination of api_host, api_key, dataset.
+            //
+            // For that, we set max_batch_size to 2, then we send 3 events, 2 with one
+            // combination and 1 with another.  Only the two should be sent, and we should get
+            // back two responses.
+            use serde_json::json;
+            let mut transmission = Transmission::new(
+                executor,
+                Options {
+                    max_batch_size: 2,
+                    batch_timeout: Duration::from_secs(5),
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            transmission.start().unwrap();
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            r#"
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"
 [
   { "status":202 },
   { "status":202 }
 ]"#,
-        )
-        .create();
+            )
+            .create();
 
-        let mut event1 = Event::new(&client::Options {
-            api_key: "some_api_key".to_string(),
-            api_host: api_host.to_string(),
-            dataset: "same".to_string(),
-            ..client::Options::default()
-        });
-        event1.metadata = Some(json!("event1"));
-        let mut event2 = event1.clone();
-        event2.metadata = Some(json!("event2"));
-        let mut event3 = event1.clone();
-        event3.options.dataset = "other".to_string();
-        event3.metadata = Some(json!("event3"));
+            let mut event1 = Event::new(&client::Options {
+                api_key: "some_api_key".to_string(),
+                api_host: api_host.to_string(),
+                dataset: "same".to_string(),
+                ..client::Options::default()
+            });
+            event1.metadata = Some(json!("event1"));
+            let mut event2 = event1.clone();
+            event2.metadata = Some(json!("event2"));
+            let mut event3 = event1.clone();
+            event3.options.dataset = "other".to_string();
+            event3.metadata = Some(json!("event3"));
 
-        transmission.send(event3);
-        transmission.send(event2);
-        transmission.send(event1);
+            transmission.send(event3).await;
+            transmission.send(event2).await;
+            transmission.send(event1).await;
 
-        let response1 = transmission.responses().iter().next().unwrap();
-        let response2 = transmission.responses().iter().next().unwrap();
-        let _ = transmission
-            .responses()
-            .recv_timeout(Duration::from_millis(250))
-            .err();
+            let response1 = transmission.responses().recv().await.unwrap();
+            let response2 = transmission.responses().recv().await.unwrap();
+            let _ = future::timeout(Duration::from_millis(250), transmission.responses().recv())
+                .await
+                .err();
 
-        assert_eq!(response1.status_code, Some(StatusCode::ACCEPTED));
-        assert_eq!(response2.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response1.status_code, Some(StatusCode::ACCEPTED));
+            assert_eq!(response2.status_code, Some(StatusCode::ACCEPTED));
 
-        // Responses can come out of order so we check against any of the metadata
-        assert!(
-            response1.metadata == Some(json!("event1"))
-                || response1.metadata == Some(json!("event2"))
-        );
-        assert!(
-            response2.metadata == Some(json!("event1"))
-                || response2.metadata == Some(json!("event2"))
-        );
-        transmission.stop().unwrap();
+            // Responses can come out of order so we check against any of the metadata
+            assert!(
+                response1.metadata == Some(json!("event1"))
+                    || response1.metadata == Some(json!("event2"))
+            );
+            assert!(
+                response2.metadata == Some(json!("event1"))
+                    || response2.metadata == Some(json!("event2"))
+            );
+            transmission.stop().await.unwrap().await.unwrap();
+        })
     }
 
     #[test]
     fn test_bad_response() {
-        use serde_json::json;
+        run_with_supported_executors(|executor| async move {
+            use serde_json::json;
 
-        let mut transmission = Transmission::new(Options::default()).unwrap();
-        transmission.start();
+            let mut transmission = Transmission::new(executor, Options::default()).unwrap();
+            transmission.start().unwrap();
 
-        let api_host = &mockito::server_url();
-        let _m = mockito::mock(
-            "POST",
-            mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
-        )
-        .with_status(400)
-        .with_header("content-type", "application/json")
-        .with_body("request body is malformed and cannot be read as JSON")
-        .create();
+            let api_host = &mockito::server_url();
+            let _m = mockito::mock(
+                "POST",
+                mockito::Matcher::Regex(r"/1/batch/(.*)$".to_string()),
+            )
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body("request body is malformed and cannot be read as JSON")
+            .create();
 
-        let mut event = Event::new(&client::Options {
-            api_key: "some_api_key".to_string(),
-            api_host: api_host.to_string(),
-            ..client::Options::default()
-        });
+            let mut event = Event::new(&client::Options {
+                api_key: "some_api_key".to_string(),
+                api_host: api_host.to_string(),
+                ..client::Options::default()
+            });
 
-        event.metadata = Some(json!("some metadata in a string"));
-        transmission.send(event);
+            event.metadata = Some(json!("some metadata in a string"));
+            transmission.send(event).await;
 
-        if let Some(response) = transmission.responses().iter().next() {
-            assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
-            assert_eq!(
-                response.body,
-                Some("request body is malformed and cannot be read as JSON".to_string())
-            );
-        } else {
-            panic!("did not receive an expected response");
-        }
-        transmission.stop().unwrap();
+            if let Ok(response) = transmission.responses().recv().await {
+                assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+                assert_eq!(
+                    response.body,
+                    Some("request body is malformed and cannot be read as JSON".to_string())
+                );
+            } else {
+                panic!("did not receive an expected response");
+            }
+            transmission.stop().await.unwrap().await.unwrap();
+        })
     }
 }
