@@ -185,6 +185,7 @@ pub use client::Client;
 pub use errors::{Error, ErrorKind, Result};
 pub use event::{Event, Metadata};
 pub use fields::FieldHolder;
+pub use response::Response;
 pub use sender::Sender;
 pub use serde_json::{json, Value};
 use transmission::Transmission;
