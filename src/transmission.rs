@@ -5,16 +5,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{
-    bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
-};
+use tokio::sync::mpsc::{channel as bounded, Receiver as ChannelReceiver, Sender as ChannelSender};
 
-use log::{error, info, trace};
-use parking_lot::Mutex;
+use log::{debug, error, info, trace};
 use reqwest::{header, StatusCode};
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder, Handle, Runtime};
+use tokio::sync::Mutex;
 
-use crate::errors::{Error, Result};
+use crate::errors::Result;
 use crate::event::Event;
 use crate::eventdata::EventData;
 use crate::events::{Events, EventsResponse};
@@ -33,7 +31,7 @@ const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 // DEFAULT_PENDING_WORK_CAPACITY how many events to queue up for busy batches
 const DEFAULT_PENDING_WORK_CAPACITY: usize = 10_000;
 // DEFAULT_SEND_TIMEOUT how much to wait to send an event
-const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_millis(1_000);
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 /// Options includes various options to tweak the behavious of the sender.
 #[derive(Debug, Clone)]
@@ -79,12 +77,11 @@ pub struct Transmission {
     user_agent: String,
 
     runtime: Arc<Mutex<Runtime>>,
+    handle: Handle,
     http_client: reqwest::Client,
 
     work_sender: ChannelSender<Event>,
-    work_receiver: ChannelReceiver<Event>,
-    response_sender: ChannelSender<Response>,
-    response_receiver: ChannelReceiver<Response>,
+    work_receiver: Arc<Mutex<ChannelReceiver<Event>>>,
 }
 
 impl Drop for Transmission {
@@ -96,78 +93,46 @@ impl Drop for Transmission {
 impl Sender for Transmission {
     fn start(&mut self) {
         let work_receiver = self.work_receiver.clone();
-        let response_sender = self.response_sender.clone();
         let options = self.options.clone();
         let user_agent = self.user_agent.clone();
         let http_client = self.http_client.clone();
 
         info!("transmission starting");
         // thread that processes all the work received
-        let runtime = self.runtime.clone();
-        runtime.lock().spawn(async {
-            Self::process_work(
-                work_receiver,
-                response_sender,
-                options,
-                user_agent,
-                http_client,
-            )
-            .await
+        let handle = self.handle.clone();
+        self.handle.spawn(async {
+            Self::process_work(handle, work_receiver, options, user_agent, http_client).await
         });
     }
 
     fn stop(&mut self) -> Result<()> {
         info!("transmission stopping");
-        if self.work_sender.is_full() {
-            error!("work sender is full");
-            return Err(Error::sender_full("work"));
-        }
-        Ok(self.work_sender.send(Event::stop_event())?)
+        let sender = self.work_sender.clone();
+        self.handle.spawn(async move {
+            let _ = sender
+                .send(Event::stop_event())
+                .await
+                .map_err(|e| error!("failed to send stop: {:?}", e));
+        });
+
+        Ok(())
     }
 
     fn send(&mut self, event: Event) {
-        let clock = Instant::now();
-        if self.work_sender.is_full() {
-            error!("work sender is full");
-            self.response_sender
-                .send(Response {
-                    status_code: None,
-                    body: None,
-                    duration: clock.elapsed(),
-                    metadata: event.metadata,
-                    error: Some("queue overflow".to_string()),
-                })
-                .unwrap_or_else(|e| {
-                    error!("response dropped, error: {}", e);
-                });
-        } else {
-            let runtime = self.runtime.clone();
-            let work_sender = self.work_sender.clone();
-            let response_sender = self.response_sender.clone();
-            runtime.lock().spawn(async move {
-                work_sender
-                    .clone()
-                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
-                    .map_err(|e| {
-                        response_sender
-                            .send(Response {
-                                status_code: None,
-                                body: None,
-                                duration: clock.elapsed(),
-                                metadata: event.metadata,
-                                error: Some(e.to_string()),
-                            })
-                            .unwrap_or_else(|e| {
-                                error!("response dropped, error: {}", e);
-                            });
-                    })
-            });
-        }
-    }
+        trace!("in transmission send");
 
-    /// responses provides access to the receiver
-    fn responses(&self) -> ChannelReceiver<Response> {
-        self.response_receiver.clone()
+        let work_sender = self.work_sender.clone();
+
+        self.handle.spawn(async move {
+            trace!("in spawn work sender send");
+
+            if let Err(e) = work_sender
+                .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
+                .await
+            {
+                error!("response dropped, error: {}", e);
+            }
+        });
     }
 }
 
@@ -189,65 +154,72 @@ impl Transmission {
         let runtime = Self::new_runtime(None)?;
 
         let (work_sender, work_receiver) = bounded(options.pending_work_capacity * 4);
-        let (response_sender, response_receiver) = bounded(options.pending_work_capacity * 4);
 
         Ok(Self {
+            handle: runtime.handle().clone(),
             runtime: Arc::new(Mutex::new(runtime)),
             options,
             work_sender,
-            work_receiver,
-            response_sender,
-            response_receiver,
+            work_receiver: Arc::new(Mutex::new(work_receiver)),
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
             http_client: reqwest::Client::new(),
         })
     }
 
     async fn process_work(
-        work_receiver: ChannelReceiver<Event>,
-        response_sender: ChannelSender<Response>,
+        handle: Handle,
+        work_receiver: Arc<Mutex<ChannelReceiver<Event>>>,
         options: Options,
         user_agent: String,
         http_client: reqwest::Client,
     ) {
-        let runtime = Self::new_runtime(Some(&options)).expect("Could not start new runtime");
         let mut batches: HashMap<String, Events> = HashMap::new();
         let mut expired = false;
 
         loop {
+            info!("in process work loop");
             let options = options.clone();
 
-            match work_receiver.recv_timeout(options.batch_timeout) {
-                Ok(event) => {
-                    if event.fields.contains_key("internal_stop_event") {
-                        info!("got 'internal_stop_event' event");
-                        break;
+            let mut work = work_receiver.lock().await;
+            tokio::select! {
+                next = work.recv() => {
+                    match next {
+                        None => {
+                          error!("channel closed");
+                        },
+                        Some(event) => {
+                            debug!("got event");
+
+                            if event.fields.contains_key("internal_stop_event") {
+                                info!("got 'internal_stop_event' event");
+                                break;
+                            }
+                            let key = format!(
+                                "{}_{}_{}",
+                                event.options.api_host, event.options.api_key, event.options.dataset
+                            );
+                            batches
+                                .entry(key)
+                                .and_modify(|v| v.push(event.clone()))
+                                .or_insert({
+                                    let mut v = Vec::with_capacity(options.max_batch_size);
+                                    v.push(event);
+                                    v
+                                });
+                        }
                     }
-                    let key = format!(
-                        "{}_{}_{}",
-                        event.options.api_host, event.options.api_key, event.options.dataset
-                    );
-                    batches
-                        .entry(key)
-                        .and_modify(|v| v.push(event.clone()))
-                        .or_insert({
-                            let mut v = Vec::with_capacity(options.max_batch_size);
-                            v.push(event);
-                            v
-                        });
-                }
-                Err(RecvTimeoutError::Timeout) => {
+                },
+                _ = tokio::time::sleep(options.batch_timeout) => {
                     expired = true;
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    // TODO(nlopes): is this the right behaviour?
-                    break;
-                }
             };
+
+            debug!("batches length: {:?}", batches.len());
 
             let mut batches_sent = Vec::new();
             for (batch_name, batch) in batches.iter_mut() {
                 if batch.is_empty() {
+                    debug!("empty batch");
                     break;
                 }
                 let options = options.clone();
@@ -258,7 +230,6 @@ impl Transmission {
                         batch.len()
                     );
                     let batch_copy = batch.clone();
-                    let batch_response_sender = response_sender.clone();
                     let batch_user_agent = user_agent.to_string();
                     // This is a shallow clone that allows reusing HTTPS connections across batches.
                     // From the reqwest docs:
@@ -266,7 +237,9 @@ impl Transmission {
                     //    it already uses an Arc internally."
                     let client_copy = http_client.clone();
 
-                    runtime.spawn(async move {
+                    handle.spawn(async move {
+                        debug!("in runtime spawn");
+
                         for response in Self::send_batch(
                             batch_copy,
                             options,
@@ -276,9 +249,7 @@ impl Transmission {
                         )
                         .await
                         {
-                            batch_response_sender
-                                .send(response)
-                                .expect("unable to enqueue batch response");
+                            debug!("sent batch: {:?}", response.status_code);
                         }
                     });
                     batches_sent.push(batch_name.to_string())
@@ -295,9 +266,6 @@ impl Transmission {
                 expired = false;
             }
         }
-        info!("Shutting down batch processing runtime");
-        runtime.shutdown_background();
-        info!("Batch processing runtime shut down");
     }
 
     async fn send_batch(
@@ -307,6 +275,8 @@ impl Transmission {
         clock: Instant,
         client: reqwest::Client,
     ) -> Vec<Response> {
+        debug!("in send batch");
+
         let mut opts: crate::client::Options = crate::client::Options::default();
         let mut payload: Vec<EventData> = Vec::new();
 

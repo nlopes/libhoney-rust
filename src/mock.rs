@@ -1,9 +1,7 @@
 /*!
 Mock module to ease testing
     */
-use crossbeam_channel::{bounded, Receiver};
 
-use crate::response::Response;
 use crate::sender::Sender;
 use crate::transmission::Options;
 use crate::Event;
@@ -16,7 +14,6 @@ pub struct TransmissionMock {
     stopped: usize,
     events_called: usize,
     events: Vec<Event>,
-    responses: Receiver<Response>,
     block_on_responses: bool,
 }
 
@@ -37,25 +34,16 @@ impl Sender for TransmissionMock {
         self.stopped += 1;
         Ok(())
     }
-
-    // `responses` returns a channel that will contain a single Response for each
-    // Event added. Note that they may not be in the same order as they came in
-    fn responses(&self) -> Receiver<Response> {
-        self.responses.clone()
-    }
 }
 
 impl TransmissionMock {
-    pub(crate) fn new(options: Options) -> Result<Self> {
-        let (_, responses) = bounded(options.pending_work_capacity * 4);
-
+    pub(crate) fn new(_options: Options) -> Result<Self> {
         Ok(Self {
             started: 0,
             stopped: 0,
             events_called: 0,
             events: Vec::new(),
             block_on_responses: false,
-            responses,
         })
     }
 
