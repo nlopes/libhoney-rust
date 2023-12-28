@@ -3,9 +3,9 @@
 */
 use std::collections::HashMap;
 
-use crossbeam_channel::Receiver;
 use log::info;
 use serde_json::Value;
+use tokio::sync::mpsc::Receiver;
 
 use crate::errors::Result;
 use crate::fields::FieldHolder;
@@ -164,8 +164,8 @@ mod tests {
         client.close().unwrap();
     }
 
-    #[test]
-    fn test_flush() {
+    #[tokio::test]
+    async fn test_flush() {
         use reqwest::StatusCode;
         use serde_json::json;
 
@@ -193,7 +193,7 @@ mod tests {
         event.metadata = Some(json!("some metadata in a string"));
         event.send(&mut client).unwrap();
 
-        let response = client.responses().iter().next().unwrap();
+        let response = client.responses().recv().await.unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 
@@ -204,7 +204,7 @@ mod tests {
         event.metadata = Some(json!("some metadata in a string"));
         event.send(&mut client).unwrap();
 
-        let response = client.responses().iter().next().unwrap();
+        let response = client.responses().recv().await.iter().next().unwrap();
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response.metadata, Some(json!("some metadata in a string")));
 

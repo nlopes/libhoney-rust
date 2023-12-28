@@ -58,6 +58,14 @@ impl Error {
     }
 
     #[doc(hidden)]
+    pub(crate) fn sender_receiver_closed(sender: &str) -> Self {
+        Self {
+            message: format!("sender's receive half is closed '{}' ", sender),
+            kind: ErrorKind::ChannelError,
+        }
+    }
+
+    #[doc(hidden)]
     pub(crate) fn with_description(description: &str, kind: ErrorKind) -> Self {
         Self {
             message: format!("error: {}", description),
@@ -84,8 +92,8 @@ impl From<io::Error> for Error {
     }
 }
 
-impl<T> From<crossbeam_channel::SendError<T>> for Error {
-    fn from(e: crossbeam_channel::SendError<T>) -> Self {
+impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
+    fn from(e: tokio::sync::mpsc::error::SendError<T>) -> Self {
         Self::with_description(&e.to_string(), ErrorKind::ChannelError)
     }
 }

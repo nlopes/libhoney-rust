@@ -1,7 +1,8 @@
 /*!
 Mock module to ease testing
-    */
-use crossbeam_channel::{bounded, Receiver};
+ */
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::{channel as bounded, Receiver};
 
 use crate::response::Response;
 use crate::sender::Sender;
@@ -16,7 +17,7 @@ pub struct TransmissionMock {
     stopped: usize,
     events_called: usize,
     events: Vec<Event>,
-    responses: Receiver<Response>,
+    responses: Arc<Mutex<Receiver<Response>>>,
     block_on_responses: bool,
 }
 
@@ -41,7 +42,7 @@ impl Sender for TransmissionMock {
     // `responses` returns a channel that will contain a single Response for each
     // Event added. Note that they may not be in the same order as they came in
     fn responses(&self) -> Receiver<Response> {
-        self.responses.clone()
+        *self.responses.lock().unwrap()
     }
 }
 
@@ -55,7 +56,7 @@ impl TransmissionMock {
             events_called: 0,
             events: Vec::new(),
             block_on_responses: false,
-            responses,
+            responses: Arc::new(Mutex::new(responses)),
         })
     }
 

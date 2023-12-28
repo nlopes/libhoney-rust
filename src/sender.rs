@@ -1,4 +1,4 @@
-use crossbeam_channel::Receiver;
+use tokio::sync::mpsc::Receiver;
 
 use crate::errors::Result;
 use crate::response::Response;

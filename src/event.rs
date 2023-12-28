@@ -193,8 +193,8 @@ mod tests {
         assert_eq!(e.fields["my_timestamp"], now);
     }
 
-    #[test]
-    fn test_send() {
+    #[tokio::test]
+    async fn test_send() {
         use crate::transmission;
 
         let api_host = &mockito::server_url();
@@ -226,7 +226,7 @@ mod tests {
         e.add_field("field_name", Value::String("field_value".to_string()));
         e.send(&mut client).unwrap();
 
-        if let Some(only) = client.transmission.responses().iter().next() {
+        if let Some(only) = client.transmission.responses().recv().await.iter().next() {
             assert_eq!(only.status_code, Some(StatusCode::OK));
         }
         client.close().unwrap();

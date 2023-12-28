@@ -2,15 +2,13 @@
 
 */
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{
-    bounded, Receiver as ChannelReceiver, RecvTimeoutError, Sender as ChannelSender,
-};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::{channel as bounded, Receiver as ChannelReceiver, Sender as ChannelSender};
 
 use log::{error, info, trace};
-use parking_lot::Mutex;
 use reqwest::{header, StatusCode};
 use tokio::runtime::{Builder, Runtime};
 
@@ -82,9 +80,9 @@ pub struct Transmission {
     http_client: reqwest::Client,
 
     work_sender: ChannelSender<Event>,
-    work_receiver: ChannelReceiver<Event>,
+    work_receiver: Arc<Mutex<ChannelReceiver<Event>>>,
     response_sender: ChannelSender<Response>,
-    response_receiver: ChannelReceiver<Response>,
+    response_receiver: Arc<Mutex<ChannelReceiver<Response>>>,
 }
 
 impl Drop for Transmission {
@@ -104,7 +102,7 @@ impl Sender for Transmission {
         info!("transmission starting");
         // thread that processes all the work received
         let runtime = self.runtime.clone();
-        runtime.lock().spawn(async {
+        runtime.lock().unwrap().spawn(async {
             Self::process_work(
                 work_receiver,
                 response_sender,
@@ -118,56 +116,64 @@ impl Sender for Transmission {
 
     fn stop(&mut self) -> Result<()> {
         info!("transmission stopping");
-        if self.work_sender.is_full() {
-            error!("work sender is full");
-            return Err(Error::sender_full("work"));
+        match self.work_sender.try_send(Event::stop_event()) {
+            Ok(_) => Ok(self.work_sender.blocking_send(Event::stop_event())?),
+            Err(e) => match e {
+                TrySendError::Closed(_) => Err(Error::sender_receiver_closed("work")),
+                TrySendError::Full(_) => {
+                    error!("work sender is full");
+                    Err(Error::sender_full("work"))
+                }
+            },
         }
-        Ok(self.work_sender.send(Event::stop_event())?)
     }
 
     fn send(&mut self, event: Event) {
         let clock = Instant::now();
-        if self.work_sender.is_full() {
-            error!("work sender is full");
-            self.response_sender
-                .send(Response {
-                    status_code: None,
-                    body: None,
-                    duration: clock.elapsed(),
-                    metadata: event.metadata,
-                    error: Some("queue overflow".to_string()),
-                })
-                .unwrap_or_else(|e| {
-                    error!("response dropped, error: {}", e);
-                });
-        } else {
-            let runtime = self.runtime.clone();
-            let work_sender = self.work_sender.clone();
-            let response_sender = self.response_sender.clone();
-            runtime.lock().spawn(async move {
-                work_sender
-                    .clone()
-                    .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
-                    .map_err(|e| {
-                        response_sender
-                            .send(Response {
-                                status_code: None,
-                                body: None,
-                                duration: clock.elapsed(),
-                                metadata: event.metadata,
-                                error: Some(e.to_string()),
-                            })
-                            .unwrap_or_else(|e| {
-                                error!("response dropped, error: {}", e);
-                            });
+        // if self.work_sender.is_full() {
+        //     error!("work sender is full");
+        //     self.response_sender
+        //         .send(Response {
+        //             status_code: None,
+        //             body: None,
+        //             duration: clock.elapsed(),
+        //             metadata: event.metadata,
+        //             error: Some("queue overflow".to_string()),
+        //         })
+        //         .unwrap_or_else(|e| {
+        //             error!("response dropped, error: {}", e);
+        //         });
+        // } else {
+        let runtime = self.runtime.clone();
+        let work_sender = self.work_sender.clone();
+        let response_sender = self.response_sender.clone();
+        runtime.lock().unwrap().spawn(async move {
+            match work_sender
+                .clone()
+                .send_timeout(event.clone(), DEFAULT_SEND_TIMEOUT)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => response_sender
+                    .send(Response {
+                        status_code: None,
+                        body: None,
+                        duration: clock.elapsed(),
+                        metadata: event.metadata,
+                        error: Some(e.to_string()),
                     })
-            });
-        }
+                    .await
+                    .unwrap_or_else(|e| {
+                        error!("response dropped, error: {}", e);
+                    }),
+            }
+        });
+        //}
     }
 
     /// responses provides access to the receiver
     fn responses(&self) -> ChannelReceiver<Response> {
-        self.response_receiver.clone()
+        self.response_receiver.lock().unwrap().recv()
     }
 }
 
@@ -195,16 +201,16 @@ impl Transmission {
             runtime: Arc::new(Mutex::new(runtime)),
             options,
             work_sender,
-            work_receiver,
+            work_receiver: Arc::new(Mutex::new(work_receiver)),
             response_sender,
-            response_receiver,
+            response_receiver: Arc::new(Mutex::new(response_receiver)),
             user_agent: format!("{}/{}", DEFAULT_NAME_PREFIX, env!("CARGO_PKG_VERSION")),
             http_client: reqwest::Client::new(),
         })
     }
 
     async fn process_work(
-        work_receiver: ChannelReceiver<Event>,
+        work_receiver: Arc<Mutex<ChannelReceiver<Event>>>,
         response_sender: ChannelSender<Response>,
         options: Options,
         user_agent: String,
@@ -217,7 +223,7 @@ impl Transmission {
         loop {
             let options = options.clone();
 
-            match work_receiver.recv_timeout(options.batch_timeout) {
+            match work_receiver.lock().unwrap().try_recv() {
                 Ok(event) => {
                     if event.fields.contains_key("internal_stop_event") {
                         info!("got 'internal_stop_event' event");
@@ -236,10 +242,10 @@ impl Transmission {
                             v
                         });
                 }
-                Err(RecvTimeoutError::Timeout) => {
+                Err(RecvTimeoutError) => {
                     expired = true;
                 }
-                Err(RecvTimeoutError::Disconnected) => {
+                Err(Disconnected) => {
                     // TODO(nlopes): is this the right behaviour?
                     break;
                 }
@@ -278,6 +284,7 @@ impl Transmission {
                         {
                             batch_response_sender
                                 .send(response)
+                                .await
                                 .expect("unable to enqueue batch response");
                         }
                     });
@@ -421,8 +428,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_responses() {
+    #[tokio::test]
+    async fn test_responses() {
         use crate::fields::FieldHolder;
 
         let mut transmission = Transmission::new(Options {
@@ -461,7 +468,7 @@ mod tests {
             event.add_field("id", serde_json::from_str(&i.to_string()).unwrap());
             transmission.send(event);
         }
-        for (i, response) in transmission.responses().iter().enumerate() {
+        for (i, response) in transmission.responses().recv().await.iter().enumerate() {
             if i == 4 {
                 break;
             }
@@ -471,8 +478,8 @@ mod tests {
         transmission.stop().unwrap();
     }
 
-    #[test]
-    fn test_metadata() {
+    #[tokio::test]
+    async fn test_metadata() {
         use serde_json::json;
 
         let mut transmission = Transmission::new(Options {
@@ -507,7 +514,7 @@ mod tests {
         event.metadata = metadata.clone();
         transmission.send(event);
 
-        if let Some(response) = transmission.responses().iter().next() {
+        if let Some(response) = transmission.responses().recv().await.iter().next() {
             assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
             assert_eq!(response.metadata, metadata);
         } else {
@@ -516,8 +523,8 @@ mod tests {
         transmission.stop().unwrap();
     }
 
-    #[test]
-    fn test_multiple_batches() {
+    #[tokio::test]
+    async fn test_multiple_batches() {
         // What we try to test here is if events are sent in separate batches, depending
         // on their combination of api_host, api_key, dataset.
         //
@@ -566,12 +573,9 @@ mod tests {
         transmission.send(event2);
         transmission.send(event1);
 
-        let response1 = transmission.responses().iter().next().unwrap();
-        let response2 = transmission.responses().iter().next().unwrap();
-        let _ = transmission
-            .responses()
-            .recv_timeout(Duration::from_millis(250))
-            .err();
+        let response1 = transmission.responses().recv().await.unwrap();
+        let response2 = transmission.responses().recv().await.unwrap();
+        let _ = transmission.responses().recv().await;
 
         assert_eq!(response1.status_code, Some(StatusCode::ACCEPTED));
         assert_eq!(response2.status_code, Some(StatusCode::ACCEPTED));
@@ -588,8 +592,8 @@ mod tests {
         transmission.stop().unwrap();
     }
 
-    #[test]
-    fn test_bad_response() {
+    #[tokio::test]
+    async fn test_bad_response() {
         use serde_json::json;
 
         let mut transmission = Transmission::new(Options::default()).unwrap();
@@ -614,7 +618,7 @@ mod tests {
         event.metadata = Some(json!("some metadata in a string"));
         transmission.send(event);
 
-        if let Some(response) = transmission.responses().iter().next() {
+        if let Some(response) = transmission.responses().recv().await {
             assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
             assert_eq!(
                 response.body,
