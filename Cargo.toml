@@ -37,4 +37,4 @@ tokio = { version = "1.0", features = ["time"], default-features = false }
 
 [dev-dependencies]
 env_logger = "0.9"
-mockito = "0.29"
+mockito = "1.2"
